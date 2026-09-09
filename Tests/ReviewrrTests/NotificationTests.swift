@@ -469,4 +469,62 @@ final class NotificationTests: XCTestCase {
         guard let project = try? JSONDecoder().decode(WatchedProject.self, from: json) else { return }
         XCTAssertEqual(project.notificationLevel, .inherit)
     }
+
+    // MARK: - What a click has to survive on
+    //
+    // A notification is handed back to the app with nothing but its own
+    // `userInfo`: the poll that produced it, the project it belonged to and
+    // the host it was fetched from are all long gone. Anything a click needs
+    // has to be in there and has to come back out intact.
+
+    @MainActor
+    func testAClickedNotificationKnowsWhichPullRequestToOpen() {
+        let reference = PRReference(owner: "acme", repo: "web", number: 482)
+        let info = NotificationService.userInfo(reference: reference, host: .dotCom)
+        let target = NotificationService.target(from: info)
+        XCTAssertEqual(target?.reference, reference)
+        XCTAssertEqual(target?.host, .dotCom)
+    }
+
+    /// The reason the host is carried at all: a watchlist mixes forges, and
+    /// a reference on its own cannot say which server it came from. Without
+    /// this a GitLab notification opened against GitHub.
+    @MainActor
+    func testAGitLabNotificationOpensAgainstGitLab() {
+        let reference = PRReference(owner: "acme", repo: "web", number: 7)
+        let info = NotificationService.userInfo(reference: reference, host: .gitLabDotCom)
+        let target = NotificationService.target(from: info)
+        XCTAssertEqual(target?.host, .gitLabDotCom)
+        XCTAssertEqual(target?.host?.forge, .gitlab)
+    }
+
+    /// A notification posted by an older build carries no host. It must
+    /// still open, on the active one.
+    @MainActor
+    func testANotificationWithoutAHostStillOpens() {
+        let reference = PRReference(owner: "acme", repo: "web", number: 3)
+        let target = NotificationService.target(from: [ "reviewrr.reference": reference.key ])
+        XCTAssertEqual(target?.reference, reference)
+        XCTAssertNil(target?.host)
+    }
+
+    /// The test notification and the per-poll summary name no pull request,
+    /// so clicking them must do nothing rather than open something arbitrary.
+    @MainActor
+    func testANotificationWithNoReferenceIsNotADestination() {
+        XCTAssertNil(NotificationService.target(from: [:]))
+        XCTAssertNil(NotificationService.target(from: ["reviewrr.reference": "not a reference"]))
+    }
+
+    /// "Send a test" exists to prove notifications work. Reporting success
+    /// when nothing could be posted is the one thing it must never do — and
+    /// in a unit-test process, where there is no notification centre to talk
+    /// to, nothing can be.
+    @MainActor
+    func testTheTestNotificationDoesNotClaimToHaveSentAnything() async {
+        let service = NotificationService()
+        let sent = await service.deliverTest()
+        XCTAssertFalse(sent)
+        XCTAssertNotNil(service.lastDeliveryError, "a test that posted nothing has to say so")
+    }
 }

@@ -39,7 +39,14 @@ struct WatchlistSettingsView: View {
                 Toggle("", isOn: $model.settings.pollingEnabled)
                     .toggleStyle(.switch)
                     .labelsHidden()
-                    .onChange(of: model.settings.pollingEnabled) { _, _ in model.persistSettings() }
+                    .onChange(of: model.settings.pollingEnabled) { _, isOn in
+                        model.persistSettings()
+                        // The coordinator reads this switch once, when it is
+                        // started. Without re-running it here, turning
+                        // polling back on left the app doing nothing until
+                        // the next launch — and with it, every notification.
+                        if isOn { model.dashboard.start() } else { model.dashboard.stop() }
+                    }
                     .accessibilityLabel("Check watched projects for activity")
             }
 

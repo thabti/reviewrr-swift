@@ -83,6 +83,13 @@ struct RootView: View {
             // notifications on in Settings.
             model.notifications.start()
 
+            // `make notify-test`: post one notification, report what macOS
+            // did with it on stderr, and quit. Never returns.
+            if NotificationProbe.isEnabled {
+                NSApp.activate(ignoringOtherApps: true)
+                await NotificationProbe.run(model.notifications)
+            }
+
             // A stress run has one job — land on the review workspace with a
             // pull request big enough to measure — so it skips sign-in and
             // the last-PR restore entirely.
@@ -116,6 +123,24 @@ struct RootView: View {
             else { return }
             await model.open(reference)
         }
+        // Polling — and therefore every notification — runs for as long as
+        // there is a credential to poll with, whatever surface the window is
+        // showing. It used to be tied to `DashboardView`'s own lifetime,
+        // which meant opening a pull request or the settings pane silently
+        // stopped it. Re-runs on sign-in and sign-out; the poll tasks
+        // themselves are owned by `PollingCoordinator`, not by this task, so
+        // its ending does not cancel them.
+        //
+        // `isPollingEligible`, not `isSignedIn`: it waits for the Keychain
+        // to answer before the first sync, and it copes with a reviewer
+        // whose credential is for GitLab rather than GitHub.
+        .task(id: model.isPollingEligible) {
+            if model.isPollingEligible {
+                model.dashboard.start()
+            } else {
+                model.dashboard.stop()
+            }
+        }
         // Injected once, so every "not configured" strip in the app can send
         // the reviewer to the pane that fixes it without holding `AppModel`.
         .environment(\.openSettingsPane, OpenSettingsAction { model.openSettings($0) })
@@ -125,11 +150,14 @@ struct RootView: View {
         // service records the reference, the window opens it. Routed through
         // the view rather than straight from the service so it behaves
         // exactly like a deep link, including the surface switch.
-        .onChange(of: model.notifications.pendingOpen) { _, reference in
-            guard let reference else { return }
+        .onChange(of: model.notifications.pendingOpen) { _, target in
+            guard let target else { return }
             model.notifications.consumePendingOpen()
             model.closeSettings()
-            Task { await model.open(reference) }
+            // The host travels with the notification, so a GitLab merge
+            // request opens against GitLab even when GitHub is the host the
+            // window happens to be on.
+            Task { await model.open(target.reference, host: target.host) }
         }
         .safeAreaInset(edge: .top) {
             if let error = model.draftSaveError {

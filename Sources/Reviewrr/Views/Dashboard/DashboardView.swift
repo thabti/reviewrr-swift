@@ -50,12 +50,15 @@ struct DashboardView: View {
         .sheet(isPresented: $model.isAddProjectPresented) {
             AddProjectSheet(model: model)
         }
+        // Polling is *not* started or stopped here. It belongs to the app's
+        // lifetime, not this view's: the dashboard is torn down whenever a
+        // pull request or the settings pane takes the window, and stopping
+        // the poller there stopped every notification for as long as the
+        // reviewer was actually reviewing. `RootView` owns it now.
         .task {
-            model.start()
             await model.refreshAll(force: false)
             model.reloadSavedReviews(includeLegacyInProgress: true)
         }
-        .onDisappear { model.stop() }
 
     }
 

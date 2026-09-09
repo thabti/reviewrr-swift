@@ -475,6 +475,48 @@ final class SignInGateTests: XCTestCase {
         XCTAssertTrue(needsSignIn(token: "", source: .keychain))
     }
 
+    // MARK: - When the poller runs
+    //
+    // Polling is the only thing that finds activity, so this rule is also
+    // the rule for whether a notification can ever arrive.
+
+    private func pollingEligible(
+        token: String? = nil,
+        source: AppModel.TokenSource,
+        isDismissed: Bool = false
+    ) -> Bool {
+        AppModel.isPollingEligible(token: token, source: source, isDismissed: isDismissed)
+    }
+
+    /// The one place this diverges from the sign-in gate. An unread Keychain
+    /// is not grounds for the sign-in screen, but it is no basis for a sync
+    /// either: starting one against a credential nobody has fetched yet just
+    /// fails and puts the poller into backoff before launch has finished.
+    func testAnUnreadKeychainDoesNotStartPollingYet() {
+        XCTAssertFalse(needsSignIn(source: .unread))
+        XCTAssertFalse(pollingEligible(source: .unread))
+    }
+
+    func testACredentialStartsPolling() {
+        XCTAssertTrue(pollingEligible(token: "ghp_stored0123456789", source: .keychain))
+        XCTAssertTrue(pollingEligible(token: "ghp_fromenv0123456789", source: .environment))
+    }
+
+    /// Signed out, or refused, means nothing to poll with.
+    func testNoCredentialDoesNotPoll() {
+        XCTAssertFalse(pollingEligible(source: .missing))
+        XCTAssertFalse(pollingEligible(token: "", source: .keychain))
+        XCTAssertFalse(pollingEligible(source: .denied(.userDeclined)))
+    }
+
+    /// Dismissing sign-in gets past the gate, but there is still no token —
+    /// the dashboard works read-only, and there is nothing to sync with. It
+    /// polls anyway, and each attempt is skipped quietly per host; that is
+    /// the same behaviour the dashboard had before polling outlived it.
+    func testDismissingSignInLeavesPollingOnItsOwnJudgement() {
+        XCTAssertTrue(pollingEligible(source: .missing, isDismissed: true))
+    }
+
     /// "Continue without signing in" has to actually continue: the demo and
     /// the read-only dashboard both work, and a screen that came straight
     /// back would be lying about that.

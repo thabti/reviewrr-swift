@@ -423,8 +423,8 @@ struct NotificationSettingsView: View {
             if current.enabled {
                 HStack(spacing: Theme.Space.s) {
                     Button {
-                        didSendTest = true
-                        Task { await model.notifications.deliverTest() }
+                        didSendTest = false
+                        Task { didSendTest = await model.notifications.deliverTest() }
                     } label: {
                         Label("Send a test", systemImage: "paperplane")
                     }

@@ -103,6 +103,26 @@ final class AppModel: ObservableObject {
 
     var isSignedIn: Bool { githubToken?.isEmpty == false }
 
+    /// Whether the background poller — and with it every notification —
+    /// should be running.
+    ///
+    /// Two conditions, and the first is the subtle one: `needsSignIn` treats
+    /// an unread Keychain as signed in so the window does not flash the
+    /// sign-in screen, but starting a sync against a credential nobody has
+    /// fetched yet just fails and puts the poller into backoff before the
+    /// app has finished launching. Waiting for the Keychain to answer costs
+    /// nothing — `RootView` reads it on first appearance.
+    var isPollingEligible: Bool {
+        Self.isPollingEligible(token: githubToken, source: tokenSource, isDismissed: isSignInDismissed)
+    }
+
+    /// Pure, for the same reason `needsSignIn` is: it is a rule about three
+    /// values, and it decides whether the app ever notices anything.
+    static func isPollingEligible(token: String?, source: TokenSource, isDismissed: Bool) -> Bool {
+        if case .unread = source { return false }
+        return !needsSignIn(token: token, source: source, isDismissed: isDismissed)
+    }
+
     /// Opens the configuration screen, optionally at a particular pane.
     ///
     /// Anything that can fail for a reason a setting fixes routes through

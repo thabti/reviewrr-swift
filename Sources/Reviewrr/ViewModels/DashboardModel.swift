@@ -99,6 +99,11 @@ final class DashboardModel: ObservableObject {
     /// the same API/token/settings handle rather than a second one.
     let context: AppContext
     private let pollingCoordinator = PollingCoordinator()
+    /// Whether `start()` has run and `stop()` has not. Watchlist edits
+    /// reschedule polling through `restartPolling()`, which must do nothing
+    /// before the dashboard has been started — otherwise adding a project
+    /// from a signed-out window would begin polling it.
+    private var isPolling = false
     /// Shared with `AppModel`, which owns it: a notification clicked in
     /// Notification Centre has to reach the window, and the permission the
     /// settings pane shows has to be the same one this posts through.
@@ -156,18 +161,42 @@ final class DashboardModel: ObservableObject {
 
     // MARK: - Lifecycle (integrator calls these)
 
+    /// Begins polling, and keeps it running for as long as there is a
+    /// credential to poll with — *not* for as long as the dashboard is on
+    /// screen. Notifications come from polling and nowhere else, so tying
+    /// this to the dashboard's own view lifetime meant every notification
+    /// stopped the moment a reviewer opened a pull request or the settings
+    /// pane, which is most of the time the app is in use.
     func start() {
         reloadSavedReviews(includeLegacyInProgress: true)
+        isPolling = true
+        schedulePolling()
+    }
+
+    func stop() {
+        isPolling = false
+        pollingCoordinator.stop()
+    }
+
+    /// Rebuilds the poll schedule after the watchlist changed.
+    ///
+    /// `PollingCoordinator.start` snapshots the project list into one task
+    /// per project, so a project added, removed or unmuted after that point
+    /// is invisible to it: a newly watched repository synced once and then
+    /// never again, and a removed one kept polling and kept writing its rows
+    /// back into the inbox.
+    private func restartPolling() {
+        guard isPolling else { return }
+        schedulePolling()
+    }
+
+    private func schedulePolling() {
         pollingCoordinator.start(
             projects: { [weak self] in self?.projects ?? [] },
             settings: { [weak self] in self?.context.settings() ?? AppSettings() },
             refreshProject: { [weak self] project in await self?.refreshProjectCoalesced(project) ?? false },
             refreshBuckets: { [weak self] in await self?.refreshBucketsCoalesced() ?? false }
         )
-    }
-
-    func stop() {
-        pollingCoordinator.stop()
     }
 
     /// A manual, whole-dashboard refresh (toolbar button, pull-to-refresh
@@ -224,6 +253,7 @@ final class DashboardModel: ObservableObject {
             let project = WatchedProject(host: host, owner: parsed.owner, repo: parsed.repo)
             projects.append(project)
             persistProjects()
+            restartPolling()
             _ = await refreshProjectCoalesced(project)
         } catch {
             addProjectError = Self.describe(error)
@@ -260,6 +290,7 @@ final class DashboardModel: ObservableObject {
         }
         guard !added.isEmpty else { return }
         persistProjects()
+        restartPolling()
 
         // Sync the new projects concurrently but let each one fail on its
         // own: one inaccessible repository must not blank the others.
@@ -280,12 +311,19 @@ final class DashboardModel: ObservableObject {
         projectRowsCache[project.key] = nil
         recomputeRows()
         persistProjects()
+        // Before this, the removed project's poll task outlived it and wrote
+        // its rows straight back into `projectRowsCache` — the repository
+        // reappeared in the inbox a few minutes after being unwatched.
+        restartPolling()
     }
 
     func toggleMute(_ project: WatchedProject) {
         guard let index = projects.firstIndex(where: { $0.key == project.key }) else { return }
         projects[index].isMuted.toggle()
         persistProjects()
+        // Muting is what stops a project being polled at all; unmuting is
+        // what has to bring it back.
+        restartPolling()
     }
 
     /// How much of one project's activity is worth a notification.

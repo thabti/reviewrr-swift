@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 #if canImport(UserNotifications)
 import UserNotifications
@@ -52,15 +53,29 @@ enum NotificationPermission: Equatable, Sendable {
 /// it reached the screen, and no delegate, so any that did arrive did nothing
 /// when clicked and never appeared at all while Reviewrr was frontmost.
 ///
-/// Everything is guarded on having a real app bundle: `UNUserNotificationCenter`
-/// traps in a process without a bundle identifier, which is every unit test
-/// and SwiftUI preview.
+/// Everything is guarded on `isAvailable` — the process being an application
+/// bundle — because `UNUserNotificationCenter.current()` traps outside one,
+/// which is every unit test and SwiftUI preview.
 @MainActor
 final class NotificationService: NSObject, ObservableObject {
+    /// What a clicked notification asks the window to open.
+    ///
+    /// The host travels with the reference because a reference alone cannot
+    /// say which server it belongs to: a watchlist mixes GitHub and GitLab,
+    /// and opening a merge request against whichever host happened to be
+    /// selected fetched the wrong thing — or nothing.
+    struct Target: Equatable {
+        var reference: PRReference
+        /// `nil` when the notification predates this field, or came from
+        /// somewhere with no host to name; the window then falls back to the
+        /// active host, which is the old behaviour.
+        var host: ForgeHost?
+    }
+
     /// Set when a notification is clicked, for `RootView` to consume. A
     /// published value rather than a callback into `AppModel` so this service
     /// stays usable from a test and from a preview.
-    @Published private(set) var pendingOpen: PRReference?
+    @Published private(set) var pendingOpen: Target?
     @Published private(set) var permission: NotificationPermission = .notAsked
     /// Set when a delivery attempt failed, so the settings pane can say so
     /// instead of leaving the reviewer to wonder.
@@ -69,11 +84,32 @@ final class NotificationService: NSObject, ObservableObject {
     /// Notification Centre groups by this; one thread per project when the
     /// reviewer asked for grouping.
     static let categoryIdentifier = "reviewrr.pullRequest"
-    private static let referenceKey = "reviewrr.reference"
+    // `nonisolated`: read from the notification-centre delegate callbacks,
+    // which macOS makes on no particular actor.
+    private nonisolated static let referenceKey = "reviewrr.reference"
+    private nonisolated static let hostKey = "reviewrr.host"
 
+    /// Torn down with the service so a notification observer does not
+    /// outlive it.
+    private var activationObserver: NSObjectProtocol?
+
+    deinit {
+        if let activationObserver {
+            NotificationCenter.default.removeObserver(activationObserver)
+        }
+    }
+
+    /// Whether there is a notification centre to talk to at all.
+    ///
+    /// A bundle identifier is not the test: the xctest agent has one, and
+    /// `UNUserNotificationCenter.current()` still trapped there with
+    /// "bundleProxyForCurrentProcess is nil" — so the guard that was meant to
+    /// keep this type usable from a test did not, and any test that touched
+    /// permission killed the whole run. What macOS actually requires is that
+    /// the running process *is* an application bundle.
     private var isAvailable: Bool {
         #if canImport(UserNotifications)
-        return Bundle.main.bundleIdentifier != nil
+        return Bundle.main.bundleIdentifier != nil && Bundle.main.bundleURL.pathExtension == "app"
         #else
         return false
         #endif
@@ -104,10 +140,29 @@ final class NotificationService: NSObject, ObservableObject {
                 options: []
             )
         ])
+        observeActivation()
         Task { await refreshPermission() }
         #else
         permission = .unavailable
         #endif
+    }
+
+    /// Re-reads the permission every time Reviewrr comes to the front.
+    ///
+    /// A reviewer who allows (or refuses) notifications in System Settings
+    /// does it in another app and then comes back here. Without this the
+    /// service kept the answer it read at launch: a freshly granted
+    /// permission delivered nothing, and the pane went on reporting a
+    /// refusal that had already been lifted, until the app was relaunched.
+    private func observeActivation() {
+        guard activationObserver == nil else { return }
+        activationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in await self?.refreshPermission() }
+        }
     }
 
     /// Reads the permission macOS holds, without prompting.
@@ -158,11 +213,19 @@ final class NotificationService: NSObject, ObservableObject {
         var playSound: Bool
         /// The pull request to open when it is clicked.
         var reference: PRReference?
+        /// Which server that pull request lives on. Carried so a click lands
+        /// on the right one rather than on whichever host is selected when
+        /// the reviewer gets round to clicking.
+        var host: ForgeHost?
     }
 
-    func deliver(_ payload: Payload) {
+    /// Hands one notification to macOS. Returns whether it got that far —
+    /// `false` means permission is missing, not that delivery failed, which
+    /// is reported asynchronously through `lastDeliveryError`.
+    @discardableResult
+    func deliver(_ payload: Payload) -> Bool {
         #if canImport(UserNotifications)
-        guard isAvailable, permission.canDeliver else { return }
+        guard isAvailable, permission.canDeliver else { return false }
         let content = UNMutableNotificationContent()
         content.title = payload.title
         if let subtitle = payload.subtitle { content.subtitle = subtitle }
@@ -171,21 +234,37 @@ final class NotificationService: NSObject, ObservableObject {
         if let thread = payload.threadIdentifier { content.threadIdentifier = thread }
         if payload.playSound { content.sound = .default }
         if let reference = payload.reference {
-            content.userInfo = [Self.referenceKey: reference.key]
+            content.userInfo = Self.userInfo(reference: reference, host: payload.host)
         }
         let request = UNNotificationRequest(identifier: payload.identifier, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request) { [weak self] error in
             guard let error else { return }
             Task { @MainActor in self?.lastDeliveryError = error.localizedDescription }
         }
+        return true
+        #else
+        return false
         #endif
     }
 
     /// Posts one notification so the reviewer can see what their settings
     /// actually produce, rather than waiting for a real pull request.
-    func deliverTest() async {
+    ///
+    /// Returns whether anything was actually posted. It used to return
+    /// nothing and the pane said "Sent" either way — so the one control
+    /// whose entire job is to prove notifications work reported success
+    /// while silently posting nothing, which is the exact failure it exists
+    /// to catch.
+    @discardableResult
+    func deliverTest() async -> Bool {
         if !permission.canDeliver { await requestPermission() }
-        deliver(
+        guard permission.canDeliver else {
+            lastDeliveryError = permission.remedy
+                ?? "macOS has not been asked for permission yet, so nothing could be posted."
+            return false
+        }
+        lastDeliveryError = nil
+        return deliver(
             Payload(
                 identifier: "reviewrr.test.\(UUID().uuidString)",
                 title: "Reviewrr notifications are working",
@@ -193,13 +272,49 @@ final class NotificationService: NSObject, ObservableObject {
                 body: "#482 Add teammate invitations with roles",
                 threadIdentifier: "reviewrr.test",
                 playSound: true,
-                reference: nil
+                reference: nil,
+                host: nil
             )
         )
     }
 
     func consumePendingOpen() {
         pendingOpen = nil
+    }
+
+    // MARK: - What a notification carries
+    //
+    // The two halves of one format, kept next to each other and pure so the
+    // round trip is checkable without a notification centre. Everything a
+    // click needs has to survive in `userInfo`: the delegate is handed the
+    // posted notification and nothing else, and by then the poll that
+    // produced it is long gone.
+
+    /// What travels with a notification so a click can open the right pull
+    /// request on the right server.
+    nonisolated static func userInfo(reference: PRReference, host: ForgeHost?) -> [String: Any] {
+        var info: [String: Any] = [referenceKey: reference.key]
+        // JSON rather than the host's fields spread across `userInfo`:
+        // `ForgeHost` already knows how to encode itself, and a plist
+        // dictionary assembled by hand here would drift from it the next
+        // time a field is added.
+        if let host, let encoded = try? JSONEncoder().encode(host) {
+            info[hostKey] = String(decoding: encoded, as: UTF8.self)
+        }
+        return info
+    }
+
+    /// Reads it back. `nil` when the notification carries no reference —
+    /// the test notification, and the per-project summary, are not a
+    /// destination.
+    nonisolated static func target(from info: [AnyHashable: Any]) -> Target? {
+        guard let key = info[referenceKey] as? String,
+              let reference = PRReference.parse(key)
+        else { return nil }
+        let host = (info[hostKey] as? String)
+            .flatMap { $0.data(using: .utf8) }
+            .flatMap { try? JSONDecoder().decode(ForgeHost.self, from: $0) }
+        return Target(reference: reference, host: host)
     }
 
     #if canImport(UserNotifications)
@@ -246,11 +361,9 @@ extension NotificationService: UNUserNotificationCenterDelegate {
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        let key = response.notification.request.content.userInfo[Self.referenceKey] as? String
+        let target = Self.target(from: response.notification.request.content.userInfo)
         Task { @MainActor [weak self] in
-            if let key, let reference = PRReference.parse(key) {
-                self?.pendingOpen = reference
-            }
+            if let target { self?.pendingOpen = target }
             completionHandler()
         }
     }

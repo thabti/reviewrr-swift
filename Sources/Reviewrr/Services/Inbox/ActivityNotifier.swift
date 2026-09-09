@@ -192,7 +192,8 @@ final class ActivityNotifier {
                     body: body,
                     threadIdentifier: thread,
                     playSound: preferences.playSound,
-                    reference: nil
+                    reference: nil,
+                    host: project.host
                 )
             )
             return
@@ -207,7 +208,10 @@ final class ActivityNotifier {
                     body: event.pr.title,
                     threadIdentifier: thread,
                     playSound: preferences.playSound,
-                    reference: event.pr.reference
+                    reference: event.pr.reference,
+                    // The row's own host, not the active one: a click has to
+                    // land on the server the pull request came from.
+                    host: event.pr.host
                 )
             )
         }
