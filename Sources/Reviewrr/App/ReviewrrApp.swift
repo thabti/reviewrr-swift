@@ -18,6 +18,15 @@ struct ReviewrrApp: App {
                 // is running and on a launch the link itself caused, so this
                 // is the only place the scheme needs handling.
                 .onOpenURL { model.open(deepLink: $0) }
+                // Development only, compiled out of a release build: renders
+                // the demo pull request to a PNG for the README and exits.
+                // See `ScreenshotExport`.
+                #if DEBUG
+                .task {
+                    guard let path = ScreenshotExport.requestedPath else { return }
+                    await ScreenshotExport.run(model: model, path: path)
+                }
+                #endif
         }
         .windowStyle(.titleBar)
         // The toolbar draws no title: the PR chip beside it already names

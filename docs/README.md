@@ -6,6 +6,7 @@ deeper context.
 
 ## Current
 
+- [`README.md`](../README.md) — the project's front page: what it is, how to run it, what it supports
 - [User journey](user-journey.md) — the review loop end to end, mapped to the code that implements it
 - [Architecture](architecture.md) — surfaces, layers, transport, wiring, storage
 - [Work plan](swift-workplan.md) — implementation plan of record and file ownership

@@ -90,3 +90,25 @@ and focus behaviour intact, and readable split and unified diffs.
 ```text
 fix(diff): keep split sides visible at narrow widths
 ```
+
+## The README screenshot
+
+`make screenshot` regenerates `docs/img/workspace.png` from the demo pull request, so the
+picture in the README is produced by the same views the app ships rather than kept by hand.
+`make screenshot LIGHT=1` for the light appearance.
+
+Three things about how it works are worth knowing before changing it:
+
+- It renders the **demo fixture** deliberately. The fixture is synthetic, so a published
+  screenshot cannot leak a repository name, title, author or hostname from whoever ran it.
+- The app draws **its own window** (`cacheDisplay(in:to:)`), which needs no Screen Recording
+  permission — unlike `screencapture` or `CGWindowListCreateImage`, so it works on a build
+  machine. `ImageRenderer` was tried first and cannot draw this interface: every AppKit-backed
+  view (`List`, `TextField`) comes out as a yellow "unsupported" placeholder.
+- The image is **cropped to the diff pane**, and the inspector is hidden before capture,
+  because the file tree and the inspector are composited by the window server and come out
+  blank either way. That is a real limitation, not a stylistic choice — if you find a way to
+  capture the whole window without the permission, the crop can go.
+
+The exporter lives in `Sources/Reviewrr/App/ScreenshotExport.swift` and is `#if DEBUG`, so it
+is compiled out of a release build.

@@ -21,7 +21,7 @@ ONLY_AI    := $(foreach s,$(AI_SUITES),-only-testing:ReviewrrTests/$(s))
 
 .DEFAULT_GOAL := help
 .PHONY: help generate build run test clean typecheck check test-ai test-live bench \
-	launch kill relaunch doctor agents crash stores reset-ai reset-all icon
+	launch kill relaunch doctor agents crash stores reset-ai reset-all icon notify-test
 
 ## help: list these commands
 help:
@@ -98,6 +98,17 @@ test-live: generate
 		-only-testing:ReviewrrTests/LiveAgentProviderTests test
 
 # --- diagnosis --------------------------------------------------------------
+
+## notify-test: post one system notification and report what macOS did with it
+# The policy that decides *whether* to notify is pure and unit-tested; what
+# is not is permission and whether the notification centre accepted the
+# request, which fail silently. Runs the built app with the probe on, prints
+# the permission state and the outcome, and exits non-zero if nothing was
+# posted. Needs a build first.
+notify-test:
+	@test -d $(APP) || { echo "No build yet — run 'make build'."; exit 1; }
+	@pkill -x Reviewrr 2>/dev/null || true
+	REVIEWRR_NOTIFY_TEST=1 $(BINARY)
 
 ## doctor: report the toolchain and everything the AI providers depend on
 doctor:
@@ -183,3 +194,19 @@ icon:
 ## clean: remove build/ and the generated .xcodeproj
 clean:
 	rm -rf $(DERIVED) $(PROJECT)
+
+# Regenerates docs/img/workspace.png from the demo pull request.
+#
+# Launched through `open` on purpose: run the binary directly and the SwiftUI
+# scene never appears, so the export task never fires. The app renders its own
+# window (no Screen Recording permission needed) and exits. Add LIGHT=1 for the
+# light appearance.
+screenshot: build
+	@rm -f docs/img/workspace.png
+	@pkill -x Reviewrr || true
+	@open -n "$(APP)" --args --export-screenshot "$(PWD)/docs/img/workspace.png" $(if $(LIGHT),--light,)
+	@for i in $$(seq 1 30); do [ -f docs/img/workspace.png ] && break; sleep 2; done
+	@pkill -x Reviewrr || true
+	@test -f docs/img/workspace.png \
+		&& echo "wrote docs/img/workspace.png" \
+		|| (echo "screenshot failed; see /tmp/reviewrr-screenshot.log"; exit 1)

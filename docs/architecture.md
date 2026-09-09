@@ -140,6 +140,56 @@ Local review status (`In review`, `Reviewed`, `Ignored`) is Reviewrr's own state
 the watchlist. Opening a PR starts `In review`; a successful submission sets `Reviewed`; an ignored
 PR stays ignored across new commits. `Unseen` and `Updated since review` are derived, not stored.
 
+## Settings
+
+Every pane shares one shape, defined in `Design/SettingsComponents.swift`: a hero card, then
+the one decision, then `AdvancedSection` for everything else. Before that each pane was a
+`Form` of `Section`s with its own idea of a heading, a helper line and a disabled state, and
+reading two of them felt like reading two apps.
+
+The user this is shaped for is an engineer who opened Settings to get one thing working and
+wants to leave. So a pane asks for an *intent* and derives the values, rather than exposing
+each value:
+
+| Pane | The one decision | Behind Advanced |
+| --- | --- | --- |
+| Account | Which host is in use | Scopes, rate limit, repository probe, device flow |
+| Notifications | How much to interrupt you — three presets | Individual triggers, scope, labels, per-project overrides |
+| Integrations | Your Jira address, with a live link preview | Project allow-list, branch/comment scanning |
+| Watchlist | How fresh the inbox should be — three rates | Activity feed, link to notifications |
+| General | Theme | Diff layout, wrap, launch behaviour |
+
+`NotificationPreset` and `PollRate` are model types, not view state, because the test target
+compiles `Models/` and not `Views/`. A preset is recognised by *comparison* rather than
+stored, so editing one detail in Advanced reports "Custom" immediately and a stored preset
+name can never disagree with the values it claims to describe.
+
+### What was removed rather than hidden
+
+A setting a reviewer cannot have an informed opinion about is not a setting:
+
+- **The Jira key regex** and the browse path. Jira's key shape does not vary between
+  installations, so the field could only be left alone or broken — and broken meant silence.
+  Both are constants; a stored custom pattern from an older build is decoded and ignored.
+- **The Cloud/Server radio group**, inferred from the address instead. It only ever changed
+  help text.
+- **Poll jitter, the interval stepper and the backoff ceiling.** Jitter keeps twenty watched
+  projects from firing in the same second — a correctness detail of the loop. The ceiling
+  derives from the chosen rate.
+- **Notification grouping and the summary threshold.** Twenty banners from one repository is
+  not a choice anyone makes.
+- **Title and description scanning for issue keys.** A key in the title is the most
+  deliberate mention there is.
+
+Each removed value keeps its default in the model and still decodes from an older settings
+blob, so nothing resets on upgrade.
+
+Vendor marks (`Design/BrandMark.swift`) identify a host or integration wherever one is named.
+GitLab's tanuki is drawn as the triangles the official mark is built from and Jira's as its
+two-chevron diamond; GitHub falls back to a monogram, because the Octocat cannot be
+reproduced honestly by hand. Dropping the official artwork into the `brand-*` image sets
+replaces any of them with no code change — see `Assets.xcassets/BRAND-ASSETS.md`.
+
 ## AI
 
 Providers implement one protocol (`complete`, optionally `stream`) and are described by a registry:
