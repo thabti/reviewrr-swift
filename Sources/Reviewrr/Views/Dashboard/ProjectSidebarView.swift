@@ -55,7 +55,7 @@ struct ProjectSidebarView: View {
                 footer
             }
         }
-        .background(Theme.cardBackground.opacity(0.4))
+        .background(Theme.columnSurface)
         .background(alignment: .topLeading) { focusShortcut }
     }
 
@@ -83,7 +83,7 @@ struct ProjectSidebarView: View {
             .accessibilityLabel("Refresh all watched projects")
         }
         .padding(14)
-        .background(Theme.barMaterial)
+        .background(Theme.columnSurface)
         .overlay(alignment: .bottom) { Divider() }
     }
 
@@ -97,7 +97,7 @@ struct ProjectSidebarView: View {
             addProjectButton
         }
         .padding(12)
-        .background(Theme.barMaterial)
+        .background(Theme.columnSurface)
     }
 
     private var syncSummary: String {
@@ -249,6 +249,10 @@ struct ProjectSidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        // Otherwise `List(.sidebar)` paints its own translucent grey over
+        // the column's surface, which is what made this band a different
+        // colour from the header and footer above and below it.
+        .scrollContentBackground(.hidden)
         .motion(Motion.smooth, value: model.projects)
         .motion(Motion.smooth, value: searchText)
     }

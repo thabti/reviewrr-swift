@@ -200,7 +200,7 @@ struct AddProjectSheet: View {
             }
             .padding(.vertical, 8)
         }
-        .background(Theme.cardBackground.opacity(0.4))
+        .background(Theme.columnSurface)
     }
 
     private func scopeSectionHeader(_ title: String) -> some View {

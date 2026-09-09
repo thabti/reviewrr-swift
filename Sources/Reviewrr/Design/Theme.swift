@@ -36,6 +36,18 @@ enum Theme {
     static let hunkSeparator = Color.secondary.opacity(0.12)
 
     static let cardBackground = Color(nsColor: .controlBackgroundColor)
+
+    /// The single surface a column of list content paints.
+    ///
+    /// A column is one panel, not three. The project sidebar used to stack a
+    /// `.bar`-material header, a `List(.sidebar)` drawing its own
+    /// translucent grey, and a 40%-opacity wash on the container — three
+    /// different surfaces in one 300pt column, which in light appearance
+    /// read as a grey band between a white header and a white footer.
+    ///
+    /// Anything using this must also hide the list's own background with
+    /// `.scrollContentBackground(.hidden)`, or the list paints over it.
+    static let columnSurface = Color(nsColor: .controlBackgroundColor)
     /// The card edge is the same hairline every other surface uses; kept as
     /// its own name because `reviewrrCard` is a shared contract.
     static let cardStroke = hairline
