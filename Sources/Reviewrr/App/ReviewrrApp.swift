@@ -54,6 +54,16 @@ struct ReviewrrApp: App {
 private struct ReviewrrCommands: Commands {
     @ObservedObject var model: AppModel
 
+    /// So the mark-viewed item can say which way it is about to go.
+    private var isCurrentFileViewed: Bool {
+        guard let file = model.selectedFile else { return false }
+        return model.draft.viewedFiles.contains(file)
+    }
+
+    // Every chord below comes from `Shortcut`, the same list the shortcuts
+    // sheet prints and the ⌘K palette advertises. Typed out per item, the
+    // three drifted: the sheet ended up documenting 4 of these bindings,
+    // ⌘K not among them, and one chord that nothing bound at all.
     var body: some Commands {
         // Account items go directly under "About Reviewrr", where macOS apps
         // put them. Sign-in has to be reachable from the menu bar: once the
@@ -65,7 +75,7 @@ private struct ReviewrrCommands: Commands {
         // actually holds the preferences.
         CommandGroup(replacing: .appSettings) {
             Button("Settings…") { model.openSettings() }
-                .keyboardShortcut(",", modifiers: .command)
+                .keyboardShortcut(Shortcut.settings.keyboardShortcut)
         }
 
         CommandGroup(after: .appInfo) {
@@ -80,34 +90,34 @@ private struct ReviewrrCommands: Commands {
         // left as a menu item that cannot work.
         CommandGroup(replacing: .newItem) {
             Button("Command Palette…") { model.isCommandPalettePresented = true }
-                .keyboardShortcut("k", modifiers: .command)
+                .keyboardShortcut(Shortcut.commandPalette.keyboardShortcut)
 
             Divider()
 
             Button("Open Pull Request…") { model.isOpenPRSheetPresented = true }
-                .keyboardShortcut("o", modifiers: .command)
+                .keyboardShortcut(Shortcut.openPullRequest.keyboardShortcut)
 
             Button("Open Demo Pull Request") { model.loadDemo() }
 
             Divider()
 
             Button("Close Pull Request") { model.closePR() }
-                .keyboardShortcut("w", modifiers: [.command, .shift])
+                .keyboardShortcut(Shortcut.closePullRequest.keyboardShortcut)
                 .disabled(model.pullRequest == nil)
         }
 
         CommandGroup(after: .sidebar) {
             Button("Back") { Task { await model.navigateHistory(offset: -1) } }
-                .keyboardShortcut("[", modifiers: .command)
+                .keyboardShortcut(Shortcut.back.keyboardShortcut)
                 .disabled(!model.canNavigateBack)
             Button("Forward") { Task { await model.navigateHistory(offset: 1) } }
-                .keyboardShortcut("]", modifiers: .command)
+                .keyboardShortcut(Shortcut.forward.keyboardShortcut)
                 .disabled(!model.canNavigateForward)
             Divider()
             Button(model.isInspectorPresented ? "Hide Side Panel" : "Show Side Panel") {
                 model.isInspectorPresented.toggle()
             }
-            .keyboardShortcut("i", modifiers: [.command, .option])
+            .keyboardShortcut(Shortcut.toggleSidePanel.keyboardShortcut)
             .disabled(model.pullRequest == nil)
 
             Picker("Side Panel", selection: $model.inspectorRail) {
@@ -120,7 +130,7 @@ private struct ReviewrrCommands: Commands {
             Divider()
 
             Button("Go to Dashboard") { model.closePR() }
-                .keyboardShortcut("0", modifiers: .command)
+                .keyboardShortcut(Shortcut.goToDashboard.keyboardShortcut)
                 .disabled(model.pullRequest == nil)
         }
 
@@ -132,38 +142,47 @@ private struct ReviewrrCommands: Commands {
                     Task { await model.reload() }
                 }
             }
-            .keyboardShortcut("r", modifiers: .command)
+            .keyboardShortcut(Shortcut.refresh.keyboardShortcut)
 
             Divider()
 
+            // ⇧⌘⏎, not ⌘⏎. A menu item is live whenever the window is, so
+            // this one shadowed every composer in the app: a reviewer typing
+            // an inline comment — whose placeholder teaches ⌘⏎ to file it as
+            // a draft — got this form instead of their draft.
             Button("Submit Review…") { model.isSubmitFormPresented = true }
-                .keyboardShortcut(.return, modifiers: .command)
+                .keyboardShortcut(Shortcut.submitReview.keyboardShortcut)
                 .disabled(model.pullRequest == nil)
 
             Divider()
 
-            Button("Mark Current File Viewed") {
+            // Titled for what it does, and it now does what `v` does. It
+            // used to toggle the flag and stay, while the navigation bar's
+            // tooltip and the ⌘K palette both taught this chord as the
+            // mark-and-move-on gesture — so pressing it twice un-marked the
+            // file the reviewer had just finished.
+            Button(isCurrentFileViewed ? "Mark File Not Viewed" : "Mark File Viewed and Open Next") {
                 guard let file = model.selectedFile else { return }
-                model.toggleViewed(file)
+                model.markViewedAndAdvance(file)
             }
-            .keyboardShortcut("v", modifiers: [.command, .shift])
+            .keyboardShortcut(Shortcut.markViewedMenu.keyboardShortcut)
             .disabled(model.selectedFile == nil)
 
             Button("Open on GitHub") {
                 guard let url = model.pullRequest.flatMap({ URL(string: $0.htmlUrl) }) else { return }
                 NSWorkspace.shared.open(url)
             }
-            .keyboardShortcut("g", modifiers: [.command, .shift])
+            .keyboardShortcut(Shortcut.openOnHost.keyboardShortcut)
             .disabled(model.pullRequest == nil)
 
             Button("Copy Reviewrr Link") { model.copyDeepLinkForOpenPR() }
-                .keyboardShortcut("c", modifiers: [.command, .shift])
+                .keyboardShortcut(Shortcut.copyDeepLink.keyboardShortcut)
                 .disabled(model.deepLinkForOpenPR == nil)
         }
 
         CommandGroup(replacing: .help) {
             Button("Keyboard Shortcuts") { WorkspaceModel.shared.showShortcuts = true }
-                .keyboardShortcut("/", modifiers: .command)
+                .keyboardShortcut(Shortcut.keyboardShortcuts.keyboardShortcut)
                 .disabled(model.pullRequest == nil)
         }
     }

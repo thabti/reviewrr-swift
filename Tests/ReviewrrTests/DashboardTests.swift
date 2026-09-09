@@ -565,6 +565,163 @@ final class DashboardTests: XCTestCase {
         XCTAssertEqual(groups.count, 1)
         XCTAssertEqual(groups.first?.rows.map(\.number), [1])
     }
+
+    // MARK: - Persistence failures are reported, not swallowed
+
+    /// A seam that stays in memory: the model reads the real watchlist and
+    /// status map from Application Support at `init`, so a test that cares
+    /// about either has to start from state it set itself rather than
+    /// whatever this Mac happens to have synced — and must not write over
+    /// the developer's own files on the way.
+    private func inMemoryPersistence(
+        projects: [WatchedProject] = [],
+        status: [String: LocalPRStatus] = [:]
+    ) -> DashboardPersistence {
+        var storedProjects = projects
+        var storedStatus = status
+        return DashboardPersistence(
+            loadProjects: { storedProjects },
+            saveProjects: { storedProjects = $0 },
+            loadLocalStatus: { storedStatus },
+            saveLocalStatus: { storedStatus = $0 }
+        )
+    }
+
+    @MainActor
+    func testFailedWatchlistSaveIsReportedAndRetryable() {
+        // The defect: both stores were `try?` behind a `Void` return, so a
+        // full volume looked exactly like a successful save — the watchlist
+        // was correct all session and empty at the next launch.
+        var writesFail = true
+        var stored: [WatchedProject] = []
+        let persistence = DashboardPersistence(
+            loadProjects: { [] },
+            saveProjects: { projects in
+                if writesFail { throw DashboardSaveFailure.noSpace }
+                stored = projects
+            },
+            loadLocalStatus: { [:] },
+            saveLocalStatus: { _ in }
+        )
+        let model = DashboardModel(context: .stub(), persistence: persistence)
+        XCTAssertNil(model.saveError, "a healthy model must not cry wolf")
+
+        let project = isolatedProject()
+        model.projects = [project]
+        model.toggleMute(project)
+
+        XCTAssertNotNil(model.saveError, "a watchlist write that failed has to be reported")
+        XCTAssertTrue(model.projects[0].isMuted, "the reviewer's change stands — only its trip to disk failed")
+        XCTAssertTrue(stored.isEmpty)
+
+        writesFail = false
+        model.retrySave()
+        XCTAssertNil(model.saveError)
+        XCTAssertEqual(stored.map(\.key), [project.key], "Retry writes what was still only in memory")
+    }
+
+    @MainActor
+    func testFailedLocalStatusSaveIsReportedAndRetryable() {
+        var writesFail = true
+        var stored: [String: LocalPRStatus] = [:]
+        let persistence = DashboardPersistence(
+            loadProjects: { [] },
+            saveProjects: { _ in },
+            loadLocalStatus: { [:] },
+            saveLocalStatus: { status in
+                if writesFail { throw DashboardSaveFailure.noSpace }
+                stored = status
+            }
+        )
+        let model = DashboardModel(context: .stub(), persistence: persistence)
+        let reference = PRReference(owner: "acme", repo: "web-app", number: 41)
+
+        model.setLocalStatus(.reviewed, for: reference)
+        XCTAssertNotNil(model.saveError, "a dozen PRs marked reviewed must not be lost silently")
+        XCTAssertEqual(model.localStatus[reference.key]?.status, .reviewed)
+
+        writesFail = false
+        model.retrySave()
+        XCTAssertNil(model.saveError)
+        XCTAssertEqual(stored[reference.key]?.status, .reviewed)
+    }
+
+    @MainActor
+    func testWarningStaysWhileEitherFileIsStillUnsaved() {
+        // One file recovering is not the all-clear: the banner has to keep
+        // describing whatever is still only in memory.
+        var projectWritesFail = true
+        let persistence = DashboardPersistence(
+            loadProjects: { [] },
+            saveProjects: { _ in if projectWritesFail { throw DashboardSaveFailure.noSpace } },
+            loadLocalStatus: { [:] },
+            saveLocalStatus: { _ in throw DashboardSaveFailure.noSpace }
+        )
+        let model = DashboardModel(context: .stub(), persistence: persistence)
+        let project = isolatedProject()
+        model.projects = [project]
+        model.toggleMute(project)
+        model.setLocalStatus(.reviewed, for: PRReference(owner: project.owner, repo: project.repo, number: 7))
+        XCTAssertNotNil(model.saveError)
+
+        projectWritesFail = false
+        model.retrySave()
+        XCTAssertNotNil(model.saveError, "the status map is still unsaved, so the warning stands")
+    }
+
+    // MARK: - A refresh that outlives interest in its project
+
+    @MainActor
+    func testRefreshLandingAfterRemovalWritesNoRows() {
+        // The race: refresh the dashboard, then immediately unwatch a
+        // project. Its finished sync used to write its rows back — into the
+        // inbox's header count but not its groups, into keyboard selection,
+        // and into the on-disk cache under a key no later refresh could ever
+        // overwrite, because the project was gone from the sidebar.
+        InboxCacheStore.clear(host: .dotCom)
+        defer { InboxCacheStore.clear(host: .dotCom) }
+
+        let project = isolatedProject()
+        let model = DashboardModel(context: .stub(), persistence: inMemoryPersistence(projects: [project]))
+        let rows = [makeRow(owner: project.owner, repo: project.repo, number: 1)]
+
+        XCTAssertNotNil(model.commitProjectRows(rows, for: project), "while watched, a finished sync commits")
+        XCTAssertEqual(model.rows.map(\.number), [1])
+
+        model.removeProject(project)
+        XCTAssertTrue(model.rows.isEmpty)
+
+        XCTAssertNil(model.commitProjectRows(rows, for: project), "an unwatched project's rows must not be written")
+        XCTAssertTrue(model.rows.isEmpty)
+        XCTAssertEqual(model.openCount(for: project), 0)
+        XCTAssertEqual(InboxCacheStore.load(host: .dotCom)?.rows.count, 0, "and nothing ghost-like reaches the cache")
+    }
+
+    @MainActor
+    func testCancelledRefreshWritesNoRows() async {
+        // Sign-out and `stop()` cancel the in-flight sync, but a response can
+        // already be on its way back when they do: it used to commit rows and
+        // fire a notification for an account that had just signed out.
+        InboxCacheStore.clear(host: .dotCom)
+        defer { InboxCacheStore.clear(host: .dotCom) }
+
+        let project = isolatedProject()
+        let model = DashboardModel(context: .stub(), persistence: inMemoryPersistence(projects: [project]))
+        let rows = [makeRow(owner: project.owner, repo: project.repo, number: 2)]
+
+        let landing = Task { @MainActor in model.commitProjectRows(rows, for: project) }
+        landing.cancel()
+
+        let committed = await landing.value
+        XCTAssertNil(committed, "a cancelled sync must not write, even with the answer in hand")
+        XCTAssertTrue(model.rows.isEmpty)
+    }
+}
+
+/// Stands in for the disk being full or the folder having lost write
+/// permission — the two ways these saves fail in the field.
+private enum DashboardSaveFailure: Error {
+    case noSpace
 }
 
 /// A pull request's size has to fit its column at a glance.

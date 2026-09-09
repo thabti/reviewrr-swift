@@ -39,8 +39,21 @@ enum WatchlistStore {
         return decoded
     }
 
+    /// Writes the watchlist, or throws saying why it could not.
+    ///
+    /// The silent twin below swallowed both the encode and the write, and
+    /// `DashboardModel.persistProjects` returned `Void`, so a full volume or
+    /// a folder that had lost write permission looked identical to a
+    /// successful save: the reviewer added projects, muted some, and lost
+    /// every one of them at the next launch with nothing on screen to
+    /// explain it. Mirrors `DraftStore.saveChecked` — new callers use this
+    /// one and surface the failure.
+    static func saveProjectsChecked(_ projects: [WatchedProject]) throws {
+        let data = try encoder.encode(projects)
+        try data.write(to: fileURL(), options: .atomic)
+    }
+
     static func saveProjects(_ projects: [WatchedProject]) {
-        guard let data = try? encoder.encode(projects) else { return }
-        try? data.write(to: fileURL(), options: .atomic)
+        try? saveProjectsChecked(projects)
     }
 }

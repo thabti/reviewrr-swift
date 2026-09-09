@@ -100,11 +100,24 @@ enum AnalysisCache {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let dir = base.appendingPathComponent("Reviewrr/ai-analysis", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // Same one-shot rename the draft store does, for the same reason: the
+        // old name held a slash for any GitLab project below the top level, so
+        // `write` failed with ENOENT under a `try?` and analyses for those
+        // projects were silently never cached — every reopen paid a provider
+        // call again. See `PRStoreFileName`.
+        PRStoreFileName.migrateLegacyNames(in: dir, host: .dotCom) {
+            PRStoreFileName.legacyReference(fileName: $0.lastPathComponent)
+        }
         return dir
     }
 
+    /// Named per reference only. Unlike drafts, this store is never told which
+    /// host it is caching for — `AIEngine` does not pass one — so two projects
+    /// with the same path on different forges still share a file here. That is
+    /// unchanged from the old name and worth its own task; what is fixed is
+    /// that the name can no longer contain a path separator.
     private static func fileURL(for reference: PRReference) -> URL {
-        directory().appendingPathComponent("\(reference.owner)_\(reference.repo)_\(reference.number).json")
+        directory().appendingPathComponent(PRStoreFileName.json(for: reference))
     }
 
     /// Retained for callers without an `AIAnalysisIdentity`; the identity

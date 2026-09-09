@@ -35,6 +35,25 @@ final class DashboardModel: ObservableObject {
 
     @Published var draftClearError: String?
 
+    /// Why the watchlist or the read/reviewed marks could not be written, or
+    /// nil when everything on screen is also on disk.
+    ///
+    /// Both writes used to be `try?` behind a `Void`-returning method, so a
+    /// full volume or a folder without write permission was indistinguishable
+    /// from a successful save: five projects added, two muted, a dozen pull
+    /// requests marked reviewed, all of it correct on screen for the whole
+    /// session and all of it gone at the next launch with no explanation.
+    /// Surfaced the way `AppModel.draftSaveError` is — a banner with a Retry
+    /// — because the state is still in memory and a retry after freeing space
+    /// genuinely saves it.
+    @Published private(set) var saveError: String?
+
+    /// Which of the two files is behind memory. Tracked separately so Retry
+    /// writes exactly what failed, and so one recovering does not clear the
+    /// other's warning.
+    private var hasUnsavedProjects = false
+    private var hasUnsavedLocalStatus = false
+
     func clearSavedReviews(_ references: [PRReference]) {
         draftClearError = nil
         var failed: [String] = []
@@ -98,6 +117,9 @@ final class DashboardModel: ObservableObject {
     /// Not private: the repository picker is built from this model and needs
     /// the same API/token/settings handle rather than a second one.
     let context: AppContext
+    /// How the watchlist and the local status map reach disk — see
+    /// `DashboardPersistence`.
+    private let persistence: DashboardPersistence
     private let pollingCoordinator = PollingCoordinator()
     /// Whether `start()` has run and `stop()` has not. Watchlist edits
     /// reschedule polling through `restartPolling()`, which must do nothing
@@ -128,13 +150,25 @@ final class DashboardModel: ObservableObject {
     /// wants. (Built in the body rather than as a default argument: a
     /// default is evaluated in the caller's isolation, and this type is
     /// main-actor only.)
-    init(context: AppContext, notifications: NotificationService? = nil) {
+    ///
+    /// `persistence` is optional for the same reason and resolves to the real
+    /// Application Support files. A test hands in closures instead: it can
+    /// then start from a known watchlist rather than whatever this Mac has
+    /// synced, and it can make a write *fail*, which is the case that used to
+    /// be invisible.
+    init(
+        context: AppContext,
+        notifications: NotificationService? = nil,
+        persistence: DashboardPersistence? = nil
+    ) {
         let notificationService = notifications ?? NotificationService()
+        let persistence = persistence ?? .live
         self.context = context
         self.notifications = notificationService
         self.activityNotifier = ActivityNotifier(notifications: notificationService)
-        self.projects = WatchlistStore.loadProjects()
-        self.localStatus = LocalStatusStore.load()
+        self.persistence = persistence
+        self.projects = persistence.loadProjects()
+        self.localStatus = persistence.loadLocalStatus()
 
         // Rows from the last session render immediately, so launch shows the
         // inbox instead of a spinner. Polling then corrects them; nothing
@@ -176,6 +210,14 @@ final class DashboardModel: ObservableObject {
     func stop() {
         isPolling = false
         pollingCoordinator.stop()
+        // This is also how sign-out ends syncing — `RootView` re-runs its
+        // polling task when the credential goes away — and it was the half
+        // nobody cancelled. A refresh is an unstructured `Task {}`, not a
+        // child of the poll loop, so a request already in flight came back
+        // *after* sign-out, wrote its rows into the inbox and the on-disk
+        // cache, and posted a notification for an account no longer signed
+        // in.
+        cancelInFlightRefreshes()
     }
 
     /// Rebuilds the poll schedule after the watchlist changed.
@@ -308,21 +350,32 @@ final class DashboardModel: ObservableObject {
 
     func removeProject(_ project: WatchedProject) {
         projects.removeAll { $0.key == project.key }
+        // Cancelled *and* guarded (`commitProjectRows`), because only the
+        // scheduling half of this was ever fixed — `restartPolling()` stops
+        // the removed project being polled again, but a refresh already in
+        // flight is an unstructured task the poll loop does not own, so it
+        // ran to completion and wrote its rows straight back into
+        // `projectRowsCache`. They landed in the inbox's header count but
+        // not its groups (the project was gone from `projects`), keyboard
+        // selection could reach a row nothing rendered, and `recomputeRows`
+        // persisted them — to a cache key no later refresh could ever
+        // overwrite, because the project was gone from the sidebar.
+        cancelInFlightRefresh(for: project.key)
         projectRowsCache[project.key] = nil
         recomputeRows()
         persistProjects()
-        // Before this, the removed project's poll task outlived it and wrote
-        // its rows straight back into `projectRowsCache` — the repository
-        // reappeared in the inbox a few minutes after being unwatched.
         restartPolling()
     }
 
     func toggleMute(_ project: WatchedProject) {
         guard let index = projects.firstIndex(where: { $0.key == project.key }) else { return }
         projects[index].isMuted.toggle()
-        persistProjects()
         // Muting is what stops a project being polled at all; unmuting is
-        // what has to bring it back.
+        // what has to bring it back. Muting also has to stop the sync
+        // already running, or the project the reviewer just silenced gets
+        // one more round of rows and notifications out of it.
+        if projects[index].isMuted { cancelInFlightRefresh(for: project.key) }
+        persistProjects()
         restartPolling()
     }
 
@@ -558,8 +611,32 @@ final class DashboardModel: ObservableObject {
         }
         inFlightProjectRefresh[project.key] = task
         let result = await task.value
-        inFlightProjectRefresh[project.key] = nil
+        // Only ever clear *our own* entry. A cancel (remove, mute, sign-out)
+        // drops the entry and a fresh refresh can already have registered
+        // its successor by the time this resumption gets here; clearing
+        // unconditionally would un-register that successor and let a second
+        // concurrent refresh of the same project start.
+        if inFlightProjectRefresh[project.key] == task {
+            inFlightProjectRefresh[project.key] = nil
+        }
         return result
+    }
+
+    /// Ends interest in one project's in-flight sync.
+    ///
+    /// Cancellation reaches the fetch through `URLSession`, which both API
+    /// layers normalise into `CancellationError` — so a cancelled refresh
+    /// leaves the previous snapshot alone rather than annotating the project
+    /// with an error.
+    private func cancelInFlightRefresh(for key: String) {
+        inFlightProjectRefresh.removeValue(forKey: key)?.cancel()
+    }
+
+    private func cancelInFlightRefreshes() {
+        for (_, task) in inFlightProjectRefresh { task.cancel() }
+        inFlightProjectRefresh.removeAll()
+        inFlightBucketsRefresh?.cancel()
+        inFlightBucketsRefresh = nil
     }
 
     private func performProjectRefresh(_ project: WatchedProject) async -> Bool {
@@ -582,9 +659,7 @@ final class DashboardModel: ObservableObject {
             let newRows = try await ForgeServices
                 .inbox(host: project.host, basic: credential.basic)
                 .fetchProject(project, token: credential.token)
-            let previousRows = projectRowsCache[project.key] ?? []
-            projectRowsCache[project.key] = newRows
-            recomputeRows()
+            guard let previousRows = commitProjectRows(newRows, for: project) else { return false }
             updateProject(project.key) { $0.lastSyncedAt = Date(); $0.lastError = nil }
 
             let ignoredKeys = Set(localStatus.filter { $0.value.status == .ignored }.keys)
@@ -611,6 +686,35 @@ final class DashboardModel: ObservableObject {
         }
     }
 
+    /// Commits one project's freshly fetched rows, or refuses to, returning
+    /// the rows that project had before the commit — `nil` when the commit
+    /// was refused.
+    ///
+    /// This is the decision `performProjectRefresh` used to skip. Both facts
+    /// checked here can change while a request is in flight, and both mean
+    /// the answer is no longer wanted:
+    ///
+    /// - the project stopped being watched. Its rows then reached the inbox's
+    ///   header count but not its groups, keyboard selection could land on a
+    ///   row nothing rendered, and `recomputeRows` wrote them to a cache key
+    ///   no later refresh would ever overwrite — the project was gone from
+    ///   the sidebar, so there was nothing left to clear them.
+    /// - the sync was cancelled (sign-out, mute, `stop()`). A response that
+    ///   arrives with the cancellation still committed rows, and the
+    ///   notification below announced them, for an account that had just
+    ///   signed out.
+    ///
+    /// Separate from the fetch on purpose: everything above it is network and
+    /// everything here is the rule, which is the part worth pinning down in a
+    /// test.
+    func commitProjectRows(_ newRows: [InboxPR], for project: WatchedProject) -> [InboxPR]? {
+        guard !Task.isCancelled, projects.contains(where: { $0.key == project.key }) else { return nil }
+        let previousRows = projectRowsCache[project.key] ?? []
+        projectRowsCache[project.key] = newRows
+        recomputeRows()
+        return previousRows
+    }
+
     /// Who is signed in, worked out from the rows rather than asked for.
     ///
     /// Every row in the `authored` bucket came back from `author:@me`, so its
@@ -633,7 +737,9 @@ final class DashboardModel: ObservableObject {
         }
         inFlightBucketsRefresh = task
         let result = await task.value
-        inFlightBucketsRefresh = nil
+        // Its own entry only, for the reason given in
+        // `refreshProjectCoalesced`.
+        if inFlightBucketsRefresh == task { inFlightBucketsRefresh = nil }
         return result
     }
 
@@ -719,6 +825,13 @@ final class DashboardModel: ObservableObject {
             return false
         }
 
+        // Same rule as `commitProjectRows`: a bucket crawl that was cancelled
+        // — sign-out, or the dashboard stopping — must not write. Each host's
+        // own `CancellationError` is skipped above, which left "every host
+        // cancelled" looking like "every host has nothing", and that emptied
+        // the reviewer's queue and persisted it.
+        guard !Task.isCancelled else { return false }
+
         for bucket in InboxReviewerBucket.allCases {
             bucketRowsCache[bucket] = merged[bucket] ?? []
         }
@@ -742,8 +855,55 @@ final class DashboardModel: ObservableObject {
         persistProjects()
     }
 
-    private func persistProjects() { WatchlistStore.saveProjects(projects) }
-    private func persistLocalStatus() { LocalStatusStore.save(localStatus) }
+    /// Writes the watchlist and reports it when that fails.
+    ///
+    /// Every watchlist edit funnels through here — add, remove, mute,
+    /// notification level, `lastSyncedAt`, `lastError` — so one place decides
+    /// what a failed write means. It never rolls the in-memory change back:
+    /// the reviewer's intent stands, the banner says it is not yet on disk,
+    /// and Retry writes the same value again once there is room for it.
+    private func persistProjects() {
+        do {
+            try persistence.saveProjects(projects)
+            hasUnsavedProjects = false
+        } catch {
+            hasUnsavedProjects = true
+        }
+        refreshSaveError()
+    }
+
+    private func persistLocalStatus() {
+        do {
+            try persistence.saveLocalStatus(localStatus)
+            hasUnsavedLocalStatus = false
+        } catch {
+            hasUnsavedLocalStatus = true
+        }
+        refreshSaveError()
+    }
+
+    /// Writes whatever is still only in memory. The banner's Retry.
+    func retrySave() {
+        if hasUnsavedProjects { persistProjects() }
+        if hasUnsavedLocalStatus { persistLocalStatus() }
+    }
+
+    /// One banner for two files: a full volume fails both, and two stacked
+    /// warnings saying the same thing is noise. Each sentence names what is
+    /// actually at risk, because "could not save" without that is a message
+    /// nobody can act on.
+    private func refreshSaveError() {
+        switch (hasUnsavedProjects, hasUnsavedLocalStatus) {
+        case (false, false):
+            saveError = nil
+        case (true, false):
+            saveError = "Your watched projects could not be saved on this Mac. Check available disk space and folder permissions — until a save succeeds, the projects, mutes, and notification settings you see now will be gone at the next launch."
+        case (false, true):
+            saveError = "Your read and reviewed marks could not be saved on this Mac. Check available disk space and folder permissions — until a save succeeds, every pull request will be unread again at the next launch."
+        case (true, true):
+            saveError = "Your watched projects and your read and reviewed marks could not be saved on this Mac. Check available disk space and folder permissions — until a save succeeds, nothing you have changed this session will survive the next launch."
+        }
+    }
 
     /// Prefers `LocalizedError.errorDescription` explicitly, matching
     /// `AppModel`'s pattern, so a `GitHubError`'s specific message always
@@ -751,4 +911,27 @@ final class DashboardModel: ObservableObject {
     private static func describe(_ error: Error) -> String {
         (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
     }
+}
+
+/// How the dashboard reads and writes the two files it owns.
+///
+/// A struct of closures for the same reasons `AppContext` is one: the real
+/// implementation is the store types, and a test gets to substitute the whole
+/// seam without a directory on disk. The saves throw — that is the point. The
+/// silent `try?` versions in `WatchlistStore`/`LocalStatusStore` are why a
+/// reviewer could lose a session's worth of watchlist and reviewed marks with
+/// nothing on screen to explain it, and a seam that cannot report a failure
+/// would let that back in.
+struct DashboardPersistence {
+    var loadProjects: () -> [WatchedProject]
+    var saveProjects: ([WatchedProject]) throws -> Void
+    var loadLocalStatus: () -> [String: LocalPRStatus]
+    var saveLocalStatus: ([String: LocalPRStatus]) throws -> Void
+
+    static let live = DashboardPersistence(
+        loadProjects: WatchlistStore.loadProjects,
+        saveProjects: WatchlistStore.saveProjectsChecked,
+        loadLocalStatus: LocalStatusStore.load,
+        saveLocalStatus: LocalStatusStore.saveChecked
+    )
 }

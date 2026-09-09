@@ -218,20 +218,27 @@ struct AvatarView: View {
     }
 }
 
-/// Builds the GitHub web URL for a file at the PR's current head commit —
-/// used by the "Open on GitHub" context menu action in both the file tree
-/// and the diff pane's sticky header. Enterprise-aware via
-/// `settings.githubHost`, the same host every other GitHub link in the app
-/// already goes through.
+/// Builds the web URL for a file at the change's current head commit — used
+/// by the "Open on GitHub" context menu action in both the file tree and the
+/// diff pane's sticky header. Enterprise-aware via `settings.githubHost`,
+/// the same host every other forge link in the app already goes through.
+///
+/// The path grammar now comes from `ForgeHost.blobURL`. It was assembled
+/// here as `…/blob/<sha>/<path>`, which is GitHub's shape: on GitLab that
+/// route is missing the `/-/` scope segment, so every "Open on GitHub" in
+/// the workspace opened a URL that only works while GitLab's legacy
+/// redirect does.
+///
+/// Still named `githubBlobURL`: its two call sites — `FileTreeView` and
+/// `DiffView` — both label the action *"Open on GitHub"*, and renaming the
+/// function without rewording them would just move the untruth around. Both
+/// labels are listed under T-073.
 @MainActor
 func githubBlobURL(model: AppModel, path: String) -> URL? {
     guard let reference = model.reference, let sha = model.pullRequest?.headSha else { return nil }
-    return model.settings.githubHost.webBaseURL
-        .appendingPathComponent(reference.owner)
-        .appendingPathComponent(reference.repo)
-        .appendingPathComponent("blob")
-        .appendingPathComponent(sha)
-        .appendingPathComponent(path)
+    return model.settings.githubHost.blobURL(
+        owner: reference.owner, repo: reference.repo, ref: sha, path: path
+    )
 }
 
 // MARK: - GitHub labels

@@ -137,8 +137,8 @@ needs a secret and does not support PKCE.
 
 ## Status
 
-Version 0.1, and honest about it: built and used daily against real pull requests, with 662
-unit tests, but not signed for distribution and not release-tested against every GitLab
-version. The GitLab mapping is exercised against fixtures written from the API documentation,
-so an older self-managed instance may still surprise it — errors name the endpoint that
-failed for exactly that reason.
+Version 0.1, and honest about it: built and used daily against real pull requests, with a unit
+suite across models, services and view models, but not signed for distribution and not
+release-tested against every GitLab version. The GitLab mapping is exercised against fixtures
+written from the API documentation, so an older self-managed instance may still surprise it —
+errors name the endpoint that failed for exactly that reason.

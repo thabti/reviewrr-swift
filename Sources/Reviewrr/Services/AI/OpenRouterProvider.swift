@@ -14,7 +14,7 @@ struct OpenRouterProvider: AIProvider {
             // attributed to Reviewrr in a caller's dashboard; harmless if
             // ignored by a request that doesn't care.
             extraHeaders: [
-                "HTTP-Referer": "https://github.com/sabeur/reviewrr-swift",
+                "HTTP-Referer": "https://github.com/thabti/reviewrr-swift",
                 "X-Title": "Reviewrr",
             ],
             includeUsageInStream: true

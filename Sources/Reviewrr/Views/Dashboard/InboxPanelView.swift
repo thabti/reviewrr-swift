@@ -328,10 +328,13 @@ struct InboxPanelView: View {
                         Button(status.label) { model.setLocalStatus(status, for: pr.reference) }
                     }
                     Divider()
-                    // Two links, named for where they land: the GitHub one
+                    // Two links, named for where they land: the forge one
                     // for anyone, the `reviewrr://` one for a teammate who
                     // has the app and should land straight in the workspace.
-                    Button("Copy GitHub Link") {
+                    // Named for *this row's* forge, because the inbox polls
+                    // every configured host and two rows in one list can
+                    // come from different ones.
+                    Button("Copy \(pr.host.forge.displayName) Link") {
                         copyToPasteboard(webURL(for: pr).absoluteString)
                     }
                     if let deepLink = pr.reference.deepLinkURL {
@@ -339,7 +342,9 @@ struct InboxPanelView: View {
                             copyToPasteboard(deepLink.absoluteString)
                         }
                     }
-                    Button("Open on GitHub") { NSWorkspace.shared.open(webURL(for: pr)) }
+                    Button("Open on \(pr.host.forge.displayName)") {
+                        NSWorkspace.shared.open(webURL(for: pr))
+                    }
                 }
                 .motionTransition(.reviewrrRow)
         }
@@ -350,9 +355,14 @@ struct InboxPanelView: View {
         NSPasteboard.general.setString(string, forType: .string)
     }
 
+    /// Through `ForgeHost.webURL`, which knows both path grammars.
+    ///
+    /// This built `/pull/` by hand, so every GitLab row copied and opened a
+    /// URL that 404s — GitLab's is `/-/merge_requests/`. The host's own
+    /// builder was already right and already used by the workspace; the
+    /// inbox just never called it.
     private func webURL(for pr: InboxPR) -> URL {
-        URL(string: "\(pr.host.webBaseURL.absoluteString)/\(pr.owner)/\(pr.repo)/pull/\(pr.number)")
-            ?? pr.host.webBaseURL
+        pr.host.webURL(owner: pr.owner, repo: pr.repo, number: pr.number) ?? pr.host.webBaseURL
     }
 }
 
@@ -466,8 +476,8 @@ private struct InboxSectionHeaderView: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .help("Open \(project.nameWithOwner) on GitHub")
-            .accessibilityLabel("Open \(project.nameWithOwner) on GitHub")
+            .help("Open \(project.nameWithOwner) on \(project.host.forge.displayName)")
+            .accessibilityLabel("Open \(project.nameWithOwner) on \(project.host.forge.displayName)")
         }
     }
 }

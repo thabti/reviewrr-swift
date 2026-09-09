@@ -363,6 +363,36 @@ final class WorkspaceModel: ObservableObject {
     /// the next change and immediately resets this back to `false`.
     @Published var searchFieldFocusRequested = false
 
+    /// The other direction: something wants the keyboard back in the diff
+    /// pane. `DiffContainerView` re-asserts its focus on the next change and
+    /// resets this to `false`.
+    ///
+    /// The pane asserted focus once, in `.task`, and never again — so
+    /// anything that took focus away kept it. Escape in the file filter had
+    /// nowhere to hand it back to, and j/k could stay dead after a sheet or
+    /// the ⌘K palette closed, for the same reason and with no obvious cause.
+    @Published var diffFocusRequested = false
+
+    /// What Escape in the file filter does. Never nothing: Escape that did
+    /// nothing at all is what trapped the keyboard in that field.
+    ///
+    /// Two steps, matching the dashboard's watchlist search — the first
+    /// Escape clears the term so a reviewer can retype without reaching for
+    /// the mouse, the second gives the diff its keys back.
+    enum FileFilterEscape: Equatable {
+        case clearedText
+        case releasedFocusToDiff
+    }
+
+    func escapeInFileFilter(typed: String) -> FileFilterEscape {
+        guard typed.isEmpty else {
+            searchText = ""
+            return .clearedText
+        }
+        diffFocusRequested = true
+        return .releasedFocusToDiff
+    }
+
     /// Unresolved-thread counts per path, published by the conversation
     /// model. REST alone cannot distinguish resolved from unresolved, so
     /// this stays empty until GraphQL thread state loads — the tree then
@@ -1132,5 +1162,40 @@ final class WorkspaceModel: ObservableObject {
         draftCountByPath = [:]
         pairedRowsCache = [:]
         pairedRowsCached = 0
+    }
+}
+
+// MARK: - Marking a file viewed
+
+/// Marking a file viewed and moving on is one action, and every way of
+/// asking for it now lands here.
+///
+/// `v` used to mark the file viewed and fold it in place, leaving the
+/// reviewer looking at a collapsed header and needing a second keystroke to
+/// get anywhere — 675 files, 1,350 presses. It marks the file and opens the
+/// next one that still needs reading instead.
+///
+/// It used to exist only inside `DiffView`, so the bare `v` key advanced to
+/// the next unread file while ⇧⌘V — which the navigation bar's tooltip and
+/// the ⌘K palette both taught as the same thing — only toggled the flag.
+/// Pressing the advertised one twice therefore un-marked the file the
+/// reviewer had just finished, and there was no shared implementation to
+/// notice the disagreement.
+///
+/// Lives here rather than in `AppModel.swift` because "the next unread
+/// file" is the workspace's ordering, and because `AppModel.swift` belongs
+/// to another task in this wave. It reads as `AppModel.stepChange`'s
+/// neighbour and should move next to it when that file is free.
+extension AppModel {
+    func markViewedAndAdvance(_ path: String) {
+        let wasViewed = draft.viewedFiles.contains(path)
+        toggleViewed(path)
+        // Un-marking is its own undo and stays put: advancing off a file the
+        // reviewer just reopened for a second look is not what they asked
+        // for.
+        guard !wasViewed else { return }
+        if let next = workspace.nextUnviewedPath(after: path, viewedFiles: draft.viewedFiles) {
+            selectedFile = next
+        }
     }
 }

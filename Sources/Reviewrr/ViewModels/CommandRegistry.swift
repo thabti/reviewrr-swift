@@ -7,6 +7,12 @@ import Foundation
 /// the *contents* of the app — the files in this pull request, the rows in
 /// the inbox, the watched projects — and a stale list is worse than no list.
 /// Building the whole set is a few hundred struct initializations.
+///
+/// The `shortcut:` labels are read from `Shortcut` rather than typed here.
+/// Written out by hand they were a third, independent claim about the
+/// keyboard — this palette printed "⌘↩" for Submit Review while the menu
+/// bound it, the composers fought it, and the shortcuts sheet said something
+/// else again.
 @MainActor
 enum CommandRegistry {
     static func commands(for model: AppModel) -> [PaletteCommand] {
@@ -30,7 +36,7 @@ enum CommandRegistry {
             PaletteCommand(
                 id: "go.dashboard", title: "Go to Dashboard",
                 subtitle: hasPR ? "Leave this pull request" : nil,
-                symbol: "square.grid.2x2", group: .go, shortcut: "⌘0",
+                symbol: "square.grid.2x2", group: .go, shortcut: Shortcut.goToDashboard.display,
                 keywords: ["home", "inbox", "back", "projects"],
                 isEnabled: hasPR
             ) { model.closePR() },
@@ -38,13 +44,13 @@ enum CommandRegistry {
             PaletteCommand(
                 id: "go.openURL", title: "Open Pull Request by URL…",
                 subtitle: "Paste a link or owner/repo#123",
-                symbol: "link", group: .go, shortcut: "⌘O",
+                symbol: "link", group: .go, shortcut: Shortcut.openPullRequest.display,
                 keywords: ["paste", "url", "link", "jump"]
             ) { model.isOpenPRSheetPresented = true },
 
             PaletteCommand(
                 id: "go.settings", title: "Open Settings",
-                symbol: "gearshape", group: .go, shortcut: "⌘,",
+                symbol: "gearshape", group: .go, shortcut: Shortcut.settings.display,
                 keywords: ["preferences", "token", "account", "provider", "config"]
             ) { model.openSettings() },
 
@@ -84,7 +90,7 @@ enum CommandRegistry {
         var commands: [PaletteCommand] = issues(model) + [
             PaletteCommand(
                 id: "pr.refresh", title: "Refresh Pull Request",
-                symbol: "arrow.clockwise", group: .pullRequest, shortcut: "⌘R",
+                symbol: "arrow.clockwise", group: .pullRequest, shortcut: Shortcut.refresh.display,
                 keywords: ["reload", "sync", "update"],
                 isEnabled: hasPR
             ) { Task { await model.reload() } },
@@ -92,14 +98,14 @@ enum CommandRegistry {
             PaletteCommand(
                 id: "pr.submit", title: "Submit Review…",
                 subtitle: hasDraft ? "\(model.draft.comments.count) draft comment(s)" : "Add a summary or a comment first",
-                symbol: "paperplane", group: .pullRequest, shortcut: "⌘↩",
+                symbol: "paperplane", group: .pullRequest, shortcut: Shortcut.submitReview.display,
                 keywords: ["approve", "request changes", "comment", "send", "publish"],
                 isEnabled: hasPR && hasDraft
             ) { model.isSubmitFormPresented = true },
 
             PaletteCommand(
                 id: "pr.openGitHub", title: "Open on GitHub",
-                symbol: "safari", group: .pullRequest, shortcut: "⇧⌘G",
+                symbol: "safari", group: .pullRequest, shortcut: Shortcut.openOnHost.display,
                 keywords: ["browser", "web", "safari"],
                 isEnabled: hasPR
             ) {
@@ -110,7 +116,7 @@ enum CommandRegistry {
             PaletteCommand(
                 id: "pr.copyDeepLink", title: "Copy Reviewrr Link",
                 subtitle: model.deepLinkForOpenPR?.absoluteString,
-                symbol: "link.badge.plus", group: .pullRequest, shortcut: "⇧⌘C",
+                symbol: "link.badge.plus", group: .pullRequest, shortcut: Shortcut.copyDeepLink.display,
                 keywords: ["deep link", "share", "url", "reviewrr://", "clipboard", "copy"],
                 isEnabled: model.deepLinkForOpenPR != nil
             ) { model.copyDeepLinkForOpenPR() },
@@ -129,15 +135,20 @@ enum CommandRegistry {
                 isEnabled: hasPR
             ) { copy(pr?.headRef) },
 
+            // Named for what it does and wired to the one implementation
+            // `v` and ⇧⌘V share. It used to say "Mark Current File Viewed"
+            // beside a chord that, pressed twice, un-marked the file the
+            // reviewer had just finished.
             PaletteCommand(
-                id: "pr.markViewed", title: "Mark Current File Viewed",
+                id: "pr.markViewed",
+                title: isCurrentFileViewed(model) ? "Mark File Not Viewed" : "Mark File Viewed and Open Next",
                 subtitle: model.selectedFile.map { ($0 as NSString).lastPathComponent },
-                symbol: "checkmark.circle", group: .pullRequest, shortcut: "⇧⌘V",
-                keywords: ["seen", "read", "progress", "done"],
+                symbol: "checkmark.circle", group: .pullRequest, shortcut: Shortcut.markViewedMenu.display,
+                keywords: ["seen", "read", "progress", "done", "next", "unread"],
                 isEnabled: model.selectedFile != nil
             ) {
                 guard let file = model.selectedFile else { return }
-                model.toggleViewed(file)
+                model.markViewedAndAdvance(file)
             },
 
             PaletteCommand(
@@ -165,7 +176,7 @@ enum CommandRegistry {
             PaletteCommand(
                 id: "pr.close", title: "Close Pull Request",
                 subtitle: "Return to the dashboard; drafts are kept",
-                symbol: "xmark.circle", group: .pullRequest, shortcut: "⇧⌘W",
+                symbol: "xmark.circle", group: .pullRequest, shortcut: Shortcut.closePullRequest.display,
                 keywords: ["leave", "exit", "dismiss"],
                 isEnabled: hasPR
             ) { model.closePR() },
@@ -178,7 +189,7 @@ enum CommandRegistry {
             commands.append(
                 PaletteCommand(
                     id: "pr.nextFile", title: "Next File",
-                    symbol: "chevron.down", group: .pullRequest, shortcut: "j",
+                    symbol: "chevron.down", group: .pullRequest, shortcut: Shortcut.nextFile.display,
                     keywords: ["forward", "advance", "navigate"]
                 ) {
                     guard let next = DiffNavigator.adjacentFile(to: model.selectedFile, in: order, delta: 1) else { return }
@@ -189,7 +200,7 @@ enum CommandRegistry {
             commands.append(
                 PaletteCommand(
                     id: "pr.previousFile", title: "Previous File",
-                    symbol: "chevron.up", group: .pullRequest, shortcut: "k",
+                    symbol: "chevron.up", group: .pullRequest, shortcut: Shortcut.previousFile.display,
                     keywords: ["back", "navigate"]
                 ) {
                     guard let previous = DiffNavigator.adjacentFile(to: model.selectedFile, in: order, delta: -1) else { return }
@@ -404,7 +415,7 @@ enum CommandRegistry {
             PaletteCommand(
                 id: "view.togglePanel",
                 title: model.isInspectorPresented ? "Hide Side Panel" : "Show Side Panel",
-                symbol: "sidebar.trailing", group: .view, shortcut: "⌥⌘I",
+                symbol: "sidebar.trailing", group: .view, shortcut: Shortcut.toggleSidePanel.display,
                 keywords: ["inspector", "rail", "right"],
                 isEnabled: hasPR
             ) { model.isInspectorPresented.toggle() },
@@ -431,7 +442,7 @@ enum CommandRegistry {
 
             PaletteCommand(
                 id: "view.unified", title: "Use Unified Diff",
-                symbol: "list.bullet.rectangle", group: .view, shortcut: "u",
+                symbol: "list.bullet.rectangle", group: .view, shortcut: Shortcut.toggleLayout.display,
                 keywords: ["single column", "layout", "inline"],
                 isEnabled: model.settings.diffLayout != .unified
             ) {
@@ -459,7 +470,7 @@ enum CommandRegistry {
 
             PaletteCommand(
                 id: "view.shortcuts", title: "Keyboard Shortcuts",
-                symbol: "keyboard", group: .view, shortcut: "⌘/",
+                symbol: "keyboard", group: .view, shortcut: Shortcut.keyboardShortcuts.display,
                 keywords: ["keys", "bindings", "help"],
                 isEnabled: hasPR
             ) { workspace.showShortcuts = true },
@@ -548,6 +559,11 @@ enum CommandRegistry {
     }
 
     // MARK: - Helpers
+
+    private static func isCurrentFileViewed(_ model: AppModel) -> Bool {
+        guard let file = model.selectedFile else { return false }
+        return model.draft.viewedFiles.contains(file)
+    }
 
     private static func copy(_ value: String?) {
         guard let value, !value.isEmpty else { return }

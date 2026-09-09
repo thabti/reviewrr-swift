@@ -25,6 +25,42 @@ struct AccountSettingsView: View {
     /// `basicAuthSection`.
     @State private var basicExpanded = false
 
+    /// A destructive credential action waiting on confirmation.
+    ///
+    /// The action *and* its host rather than a `Bool` per button: the cards
+    /// are built in a `ForEach`, so which host was pressed has to travel with
+    /// the request — and it is one piece of state, and therefore one dialog
+    /// attached to the `Form`, because two `confirmationDialog` modifiers on
+    /// the same view is a shape SwiftUI does not reliably present both halves
+    /// of.
+    @State private var pendingHostAction: PendingHostAction?
+
+    private enum PendingHostAction: Equatable {
+        case signOut(HostAccount)
+        case remove(HostAccount)
+
+        var title: String {
+            switch self {
+            case .signOut(let account): return "Sign out of \(account.host.displayName)?"
+            case .remove(let account): return "Remove \(account.host.displayName)?"
+            }
+        }
+
+        var confirmTitle: String {
+            switch self {
+            case .signOut: return "Sign Out"
+            case .remove: return "Remove"
+            }
+        }
+
+        var confirmHelp: String {
+            switch self {
+            case .signOut: return "Delete this host's credential from this Mac"
+            case .remove: return "Forget this host and delete its credential from this Mac"
+            }
+        }
+    }
+
     private static let relativeFormatter = RelativeDateTimeFormatter()
 
     var body: some View {
@@ -68,6 +104,32 @@ struct AccountSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        // Deleting a credential from the Keychain is the one action in this
+        // pane that cannot be undone from inside the app — the forge shows a
+        // token exactly once — and "Sign Out" sits one control away from
+        // "Verify", which is the button a reviewer diagnosing a problem
+        // actually reaches for. Attached to the `Form`, not to each card, so
+        // there is one dialog rather than one per host.
+        .confirmationDialog(
+            pendingHostAction?.title ?? "",
+            isPresented: dialogBinding($pendingHostAction),
+            titleVisibility: .visible,
+            presenting: pendingHostAction
+        ) { pending in
+            Button(pending.confirmTitle, role: .destructive) {
+                switch pending {
+                case .signOut(let account): auth.signOut(host: account.host)
+                case .remove(let account): auth.forget(host: account.host)
+                }
+            }
+            .help(pending.confirmHelp)
+            Button("Cancel", role: .cancel) {}
+        } message: { pending in
+            switch pending {
+            case .signOut(let account): Text(signOutExplanation(account))
+            case .remove(let account): Text(removalExplanation(account))
+            }
+        }
         .task {
             auth.refreshHostAccounts()
             await auth.verify()
@@ -176,20 +238,81 @@ struct AccountSettingsView: View {
 
             Spacer(minLength: 0)
 
+            // Both titled with an ellipsis and both routed through a
+            // confirmation, like "Clear All Drafts…" in the Data pane: the
+            // Keychain is the only copy of the credential on this Mac and the
+            // forge will not show the token again.
             if account.hasCredential {
-                Button("Sign Out", role: .destructive) { auth.signOut(host: account.host) }
+                Button("Sign Out…", role: .destructive) { pendingHostAction = .signOut(account) }
                     .help("Remove \(account.host.displayName)'s credential from this Mac. It is not revoked on the server.")
                     .accessibilityLabel("Sign out of \(account.host.displayName)")
+                    .accessibilityHint("Asks for confirmation first")
             }
 
             if account.isRemovable {
-                Button("Remove", role: .destructive) { auth.forget(host: account.host) }
+                Button("Remove…", role: .destructive) { pendingHostAction = .remove(account) }
                     .help(account.isActive
                           ? "Forget \(account.host.displayName) and its credential, and go back to GitHub.com"
                           : "Forget \(account.host.displayName) and its credential")
                     .accessibilityLabel("Remove \(account.host.displayName)")
+                    .accessibilityHint("Asks for confirmation first")
             }
         }
+    }
+
+    /// Drives a dialog from optional state and clears it on dismissal, so
+    /// Cancel, Escape and a click outside all leave nothing pending.
+    private func dialogBinding<Value>(_ state: Binding<Value?>) -> Binding<Bool> {
+        Binding(get: { state.wrappedValue != nil }, set: { if !$0 { state.wrappedValue = nil } })
+    }
+
+    /// What signing out actually costs, named exactly.
+    ///
+    /// The masked token is in it on purpose: the pane already shows it, and a
+    /// reviewer with a credential on github.com and another on an appliance
+    /// needs to see *which* one is about to be deleted. It is the masked form
+    /// — the same one `credentialStatusView` renders — never the secret.
+    private func signOutExplanation(_ account: HostAccount) -> String {
+        var sentences: [String] = []
+        if let token = account.maskedToken {
+            sentences.append(
+                "The access token \(token) is deleted from this Mac's Keychain and cannot be recovered — "
+                + "\(account.host.forge.displayName) will not show it again, so signing back in means creating a new one."
+            )
+        }
+        if let username = account.basicUsername {
+            sentences.append(
+                account.maskedToken == nil
+                    ? "The HTTP Basic credential for \(username) is deleted from this Mac's Keychain."
+                    : "The HTTP Basic credential for \(username) goes with it."
+            )
+        }
+        sentences.append("Nothing is revoked on the server, and your watched projects, drafts, and reviewed marks are kept.")
+        return sentences.joined(separator: " ")
+    }
+
+    /// Removal is sign-out plus forgetting the host, so it says both — and
+    /// names the watched projects it strands, which is the part nobody would
+    /// guess from the word "Remove".
+    private func removalExplanation(_ account: HostAccount) -> String {
+        var sentences: [String] = [
+            account.hasCredential
+                ? "Reviewrr forgets \(account.host.displayName): its credential (\(account.credentialSummary)) is deleted from this Mac's Keychain and cannot be recovered, and the host is dropped from this list."
+                : "Reviewrr forgets \(account.host.displayName) and drops it from this list."
+        ]
+        if account.isActive {
+            sentences.append("Reviewrr goes back to GitHub.com.")
+        }
+        let stranded = model.dashboard.projects.filter { $0.host.identityKey == account.host.identityKey }.count
+        if stranded > 0 {
+            sentences.append(
+                stranded == 1
+                    ? "1 watched project on it stays on your watchlist and stops syncing until the host is added again."
+                    : "\(stranded) watched projects on it stay on your watchlist and stop syncing until the host is added again."
+            )
+        }
+        sentences.append("Nothing is revoked on the server.")
+        return sentences.joined(separator: " ")
     }
 
     // MARK: - Adding a host

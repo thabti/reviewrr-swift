@@ -37,8 +37,20 @@ enum LocalStatusStore {
         return decoded
     }
 
+    /// Writes the read/reviewed/ignored map, or throws saying why it could
+    /// not.
+    ///
+    /// The silent twin below swallowed both the encode and the write, so an
+    /// unwritable folder cost the reviewer every "reviewed" mark they made
+    /// all session — silently, at the next launch. Mirrors
+    /// `DraftStore.saveChecked`; new callers use this one and surface the
+    /// failure.
+    static func saveChecked(_ status: [String: LocalPRStatus]) throws {
+        let data = try encoder.encode(status)
+        try data.write(to: fileURL(), options: .atomic)
+    }
+
     static func save(_ status: [String: LocalPRStatus]) {
-        guard let data = try? encoder.encode(status) else { return }
-        try? data.write(to: fileURL(), options: .atomic)
+        try? saveChecked(status)
     }
 }

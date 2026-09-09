@@ -86,6 +86,60 @@ final class ForgeHostTests: XCTestCase {
         )
     }
 
+    /// The inbox's "Open on GitHub" and "Copy GitHub Link" built `/pull/`
+    /// by hand for every row, so both were a 404 on GitLab. They go through
+    /// `webURL` now; this pins the rule rather than the one call site, for
+    /// every host shape the inbox can hold — nested groups and a
+    /// subdirectory install included.
+    func testGitLabWebURLsNeverUseGitHubsPathGrammar() {
+        let hosts = [
+            ForgeHost.gitlab("git.example")!,
+            ForgeHost.gitlab("https://internal.example/gitlab")!,
+            ForgeHost.gitlab("git.example:8443")!,
+        ]
+        for host in hosts {
+            guard let text = host.webURL(owner: "group/sub/deeper", repo: "proj", number: 42)?.absoluteString else {
+                XCTFail("no web URL for \(host.displayName)")
+                continue
+            }
+            XCTAssertFalse(text.contains("/pull/"), text)
+            XCTAssertTrue(text.hasSuffix("/group/sub/deeper/proj/-/merge_requests/42"), text)
+            // Well-formed: every group level is a path segment, not an
+            // escaped one. `%2F` here is the *API*'s project encoding, and
+            // pasting it into a browser lands nowhere.
+            XCTAssertFalse(text.contains("%2F"), text)
+            XCTAssertEqual(URL(string: text)?.absoluteString, text)
+        }
+    }
+
+    /// The same hardcoding in the workspace's file links: `…/blob/<sha>/…`
+    /// is GitHub's shape, and on GitLab a project's own routes live under
+    /// `/-/`.
+    func testBlobURLUsesEachForgesOwnPathShape() {
+        XCTAssertEqual(
+            ForgeHost.dotCom.blobURL(owner: "acme", repo: "web", ref: "abc123", path: "src/main.swift")?.absoluteString,
+            "https://github.com/acme/web/blob/abc123/src/main.swift"
+        )
+        XCTAssertEqual(
+            ForgeHost.gitlab("https://internal.example/gitlab")!
+                .blobURL(owner: "group/sub", repo: "proj", ref: "abc123", path: "src/main.swift")?.absoluteString,
+            "https://internal.example/gitlab/group/sub/proj/-/blob/abc123/src/main.swift"
+        )
+    }
+
+    /// A path is the one part of these URLs that carries arbitrary text, and
+    /// a space makes `URL(string:)` return nil outright while a `#` silently
+    /// truncates the rest into a fragment.
+    func testBlobURLPercentEncodesAFileNameThatNeedsIt() {
+        let url = ForgeHost.gitlab("git.example")!
+            .blobURL(owner: "group", repo: "proj", ref: "abc", path: "docs/My File #2.md")
+        XCTAssertEqual(
+            url?.absoluteString,
+            "https://git.example/group/proj/-/blob/abc/docs/My%20File%20%232.md"
+        )
+        XCTAssertNil(ForgeHost.dotCom.blobURL(owner: "acme", repo: "web", ref: "", path: "a.swift"))
+    }
+
     /// A host blob written before GitLab support has no `forge` key and
     /// must decode as GitHub rather than failing — the same tolerance the
     /// rest of the settings blob has.
@@ -689,5 +743,231 @@ final class GitLabMapperTests: XCTestCase {
         XCTAssertEqual(Forge.gitlab.changeNoun, "merge request")
         XCTAssertEqual(Forge.gitlab.changeNounAbbreviation, "MR")
         XCTAssertEqual(Forge.github.changeNounAbbreviation, "PR")
+    }
+}
+
+// MARK: - Refusals
+
+/// A stubbed transport for `GitLabAPI`'s injected session, so a *refusal*
+/// can be tested and not only the sentence one produces.
+///
+/// Scoped to the session it is configured on — nothing is registered with
+/// `URLProtocol.registerClass`, so it cannot reach another suite's requests.
+/// The handler still has to be static, because `URLSession` instantiates the
+/// protocol itself and takes no context; that makes these tests order- but
+/// not thread-safe, which matches how XCTest runs a class by default.
+final class GitLabStubTransport: URLProtocol {
+    nonisolated(unsafe) static var respond: ((URLRequest) -> (Int, String))?
+
+    static func session(_ respond: @escaping (URLRequest) -> (Int, String)) -> URLSession {
+        Self.respond = respond
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [GitLabStubTransport.self]
+        return URLSession(configuration: config)
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let (status, body) = Self.respond?(request) ?? (500, "{}")
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: status, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+/// "There are none" and "we were not allowed to ask" are two different
+/// claims, and the panel above this layer already renders them differently.
+/// These pin the lower layer that used to flatten the second into the first:
+/// a `read_api` token made the app state *"No checks reported — this commit
+/// has no CI checks or commit statuses"* over a red pipeline.
+final class GitLabRefusalTests: XCTestCase {
+    private let reference = PRReference(owner: "group/sub", repo: "proj", number: 7)
+
+    private func client(_ respond: @escaping (URLRequest) -> (Int, String)) -> GitLabClient {
+        GitLabClient(
+            api: GitLabAPI(
+                host: ForgeHost.gitlab("git.example")!,
+                session: GitLabStubTransport.session(respond)
+            )
+        )
+    }
+
+    private func message(_ error: Error) -> String {
+        (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+    }
+
+    func testADeniedPipelineQueryIsNotAnEmptyResult() async {
+        let client = client { _ in (403, #"{"message": "insufficient_scope"}"#) }
+        do {
+            let runs = try await client.fetchChecks(reference, token: "t")
+            XCTFail("a refused pipeline query reported \(runs.count) checks instead of throwing")
+        } catch {
+            let text = message(error)
+            // Names the fact that is missing: GitLab's own 403 body names no
+            // endpoint, and five requests are in flight while a merge
+            // request opens.
+            XCTAssertTrue(text.contains("pipelines"), text)
+            XCTAssertTrue(text.contains("\"api\" scope"), text)
+        }
+    }
+
+    func testANotFoundPipelineQueryDoesNotClaimTheProjectHasNoCI() async {
+        let client = client { _ in (404, #"{"message": "404 Not found"}"#) }
+        do {
+            _ = try await client.fetchChecks(reference, token: "t")
+            XCTFail("a 404 from /pipelines must not present as an empty check list")
+        } catch {
+            XCTAssertTrue(message(error).contains("does not mean there is no CI"), message(error))
+        }
+    }
+
+    /// The other half of the rule: an empty answer is still allowed when it
+    /// is the answer GitLab actually gave. Throwing on *this* would trade
+    /// one wrong claim for another.
+    func testAnEmptyPipelineListIsStillAnEmptyResult() async throws {
+        let client = client { _ in (200, "[]") }
+        let runs = try await client.fetchChecks(reference, token: "t")
+        XCTAssertTrue(runs.isEmpty)
+    }
+
+    /// A readable pipeline whose *jobs* are denied keeps reporting the
+    /// pipeline. "Which job failed" is the better answer, but "CI exists and
+    /// it is red" is a true one, and it is the pre-existing behaviour this
+    /// change deliberately leaves alone.
+    func testPipelineIsStillReportedWhenOnlyItsJobsAreDenied() async throws {
+        let client = client { request in
+            request.url?.path.contains("/jobs") == true
+                ? (403, #"{"message": "insufficient_scope"}"#)
+                : (200, #"[{"id": 91, "status": "failed", "sha": "abc", "created_at": "2024-05-02T10:00:00Z"}]"#)
+        }
+        let runs = try await client.fetchChecks(reference, token: "t")
+        XCTAssertEqual(runs.count, 1)
+        XCTAssertEqual(runs.first?.conclusion, .failure)
+    }
+
+    func testDeniedApprovalsDoNotPresentAsNobodyHavingApproved() async {
+        let client = client { _ in (403, #"{"message": "insufficient_scope"}"#) }
+        do {
+            let reviews = try await client.fetchReviews(reference, token: "t")
+            XCTFail("a refused approvals query reported \(reviews.count) reviews instead of throwing")
+        } catch {
+            XCTAssertTrue(message(error).contains("approvals"), message(error))
+        }
+    }
+
+    /// The tolerated case that motivated the old `return []`: approvals are
+    /// a paid feature, so a 404 is expected on plenty of instances. It is
+    /// still not "nobody approved", and the message has to say which it is.
+    func testMissingApprovalsFeatureIsReportedAsUnsupportedNotAsUnanimity() async {
+        let client = client { _ in (404, #"{"message": "404 Not found"}"#) }
+        do {
+            _ = try await client.fetchReviews(reference, token: "t")
+            XCTFail("a 404 from /approvals must not present as an empty review list")
+        } catch {
+            let text = message(error)
+            XCTAssertTrue(text.contains("paid GitLab feature"), text)
+            XCTAssertTrue(text.contains("not the same as nobody having approved"), text)
+        }
+    }
+
+    func testApprovalsStillDecodeWhenTheInstanceAnswers() async throws {
+        let client = client { _ in
+            (200, #"{"approved": true, "approvals_required": 1, "approvals_left": 0, "approved_by": [{"user": {"id": 3, "username": "ana", "name": "Ana"}}]}"#)
+        }
+        let reviews = try await client.fetchReviews(reference, token: "t")
+        XCTAssertEqual(reviews.map(\.user.login), ["ana"])
+    }
+}
+
+// MARK: - Review events
+
+/// What the submit form is allowed to say on each forge.
+///
+/// The bug these exist for: the picker was `ForEach(ReviewEvent.allCases)`,
+/// so GitLab reviewers were offered "Request changes" under the words
+/// *"Blocks merging until changes are made"*. GitLab has approval and the
+/// absence of approval and no way for a review to hold a merge, so the
+/// reviewer submitted, saw success, and the merge request merged.
+final class ForgeReviewActionTests: XCTestCase {
+    func testGitLabIsNeverOfferedAnOutcomeThatBlocksAMerge() {
+        for action in ForgeReviewAction.all(on: .gitlab) {
+            XCTAssertNotEqual(
+                action.emphasis, .blocking,
+                "GitLab has no mechanism for \(action.label) to block a merge"
+            )
+        }
+        // The claim is legitimate on the forge that has the mechanism, so
+        // this is a forge distinction and not a blanket ban on the words.
+        XCTAssertEqual(
+            ForgeReviewAction.action(for: .requestChanges, on: .github).emphasis, .blocking
+        )
+    }
+
+    func testGitLabsThirdChoiceIsNamedForWhatItActuallyDoes() {
+        let action = ForgeReviewAction.action(for: .requestChanges, on: .gitlab)
+        XCTAssertEqual(action.label, "Revoke approval")
+        XCTAssertNotEqual(action.label, "Request changes")
+        XCTAssertFalse(action.detail.contains("Blocks merging"))
+        // Says what happens, that the mechanism the reviewer reached for
+        // does not exist, and what to do instead.
+        XCTAssertTrue(action.detail.contains("takes back your approval"), action.detail)
+        XCTAssertTrue(action.detail.contains("cannot block a merge"), action.detail)
+        XCTAssertTrue(action.detail.contains("mark it as a draft"), action.detail)
+    }
+
+    func testGitHubsWordingIsUnchanged() {
+        let actions = ForgeReviewAction.all(on: .github)
+        XCTAssertEqual(actions.map(\.label), ["Comment", "Approve", "Request changes"])
+        XCTAssertEqual(actions.map(\.detail), [
+            "Leaves feedback without approving or blocking.",
+            "Approves the pull request as ready to merge.",
+            "Blocks merging until changes are made.",
+        ])
+    }
+
+    /// Every sentence a GitLab reviewer reads in this form is about a merge
+    /// request. Calling one a pull request is the small wrongness
+    /// `Forge.changeNoun` exists to prevent.
+    func testGitLabWordingNeverSaysPullRequest() {
+        for action in ForgeReviewAction.all(on: .gitlab) {
+            XCTAssertFalse(action.detail.lowercased().contains("pull request"), action.detail)
+            XCTAssertFalse(
+                action.actionDescription.lowercased().contains("pull request"), action.actionDescription
+            )
+        }
+    }
+
+    /// The submit button, its tooltip and its accessibility label are one
+    /// sentence rather than "\(label) this merge request", which produced
+    /// "Revoke approval this merge request".
+    func testEveryOutcomeHasAWholeSentenceForTheButton() {
+        for forge in Forge.allCases {
+            for action in ForgeReviewAction.all(on: forge) {
+                XCTAssertFalse(action.actionDescription.isEmpty)
+                XCTAssertTrue(
+                    action.actionDescription.contains(Forge.github == forge ? "pull request" : "merge request"),
+                    action.actionDescription
+                )
+            }
+        }
+    }
+
+    /// A `Picker` selects by tag: a forge that offered no action for the
+    /// event a draft has saved would render a segmented control with nothing
+    /// selected while the submit button still sent that event.
+    func testEverySavedEventStillSelectsASegmentOnBothForges() {
+        for forge in Forge.allCases {
+            let offered = ForgeReviewAction.all(on: forge)
+            XCTAssertEqual(Set(offered.map(\.event)), Set(ReviewEvent.allCases))
+            XCTAssertEqual(Set(offered.map(\.id)).count, offered.count, "duplicate picker tags")
+        }
     }
 }

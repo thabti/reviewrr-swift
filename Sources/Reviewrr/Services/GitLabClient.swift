@@ -179,24 +179,34 @@ struct GitLabClient {
 
     /// Approvals as `Review` values.
     ///
-    /// Merge request approvals are a paid feature on GitLab.com and in some
-    /// self-managed tiers. A 403 or 404 here therefore means "this instance
-    /// does not offer approvals", not "the review failed" — so it returns
-    /// empty rather than throwing, and the panel shows no approvals instead
-    /// of an error a reviewer cannot act on.
+    /// This used to answer a 403, a 404 or a 5xx with `[]`, on the grounds
+    /// that merge request approvals are a paid feature and an instance
+    /// without them must not stop the merge request opening. The second half
+    /// of that is right; the first half made the app assert something it did
+    /// not know. An empty array is the claim *nobody has approved and nobody
+    /// has objected*, and the reviewers row in the conversation panel states
+    /// it in those words — over an instance that had simply refused to
+    /// answer, or a token whose scope could not ask.
+    ///
+    /// So it throws, and the caller decides. Nothing stops opening as a
+    /// result: `AppModel.loadDiscussion` runs this alongside the diff and
+    /// contains its own failures (that containment is currently a `try?`,
+    /// which erases this distinction again one layer up — T-013).
     func fetchReviews(_ reference: PRReference, token: String?) async throws -> [Review] {
         do {
             let approvals = try await api.get(
                 GLApprovals.self, path: api.mergeRequestPath(reference) + "/approvals", token: token
             )
             return GitLabMapper.reviews(from: approvals)
-        } catch GitLabError.forbidden, GitLabError.notFound {
-            return []
-        } catch GitLabError.serverError {
-            // Approvals are supporting detail. An instance failing on this
-            // endpoint must not stop the merge request opening — the diff is
-            // what the reviewer came for.
-            return []
+        } catch let error as GitLabError {
+            throw Self.couldNotRead(
+                "this merge request's approvals",
+                remedy: """
+                    Merge request approvals are a paid GitLab feature, and reading them needs a token \
+                    with the "api" scope — so this is not the same as nobody having approved.
+                    """,
+                error: error
+            )
         }
     }
 
@@ -214,12 +224,30 @@ struct GitLabClient {
             pipelines = try await api.getAllPages(
                 GLPipeline.self, path: api.mergeRequestPath(reference) + "/pipelines", token: token, maxPages: 1
             )
-        } catch GitLabError.serverError, GitLabError.forbidden, GitLabError.notFound {
-            // CI is supporting detail too. The panel shows no checks rather
-            // than failing the load.
-            return []
+        } catch let error as GitLabError {
+            // Not `[]`. A `read_api` token cannot read pipelines, and this
+            // used to turn its 403 into an empty result — which
+            // `ChecksListView` renders as "No checks reported — this commit
+            // has no CI checks or commit statuses" over a red pipeline, and
+            // reviewers approved on it.
+            //
+            // The distinction is already built and correct one layer up:
+            // `ConversationModel.refreshChecks` maps a thrown error onto
+            // `checksLoadPhase = .failed`, and both the chip and the Checks
+            // tab consult that phase before believing the rollup. This layer
+            // was the only thing erasing it.
+            throw Self.couldNotRead(
+                "the pipelines for this merge request",
+                remedy: """
+                    Either this instance will not report pipelines to this token or the merge request \
+                    is not visible to it — it does not mean there is no CI on this project.
+                    """,
+                error: error
+            )
         }
         guard let newest = pipelines.max(by: { ($0.createdAt ?? .distantPast) < ($1.createdAt ?? .distantPast) }) else {
+            // The one honest empty answer: GitLab was asked and listed no
+            // pipelines for this merge request.
             return []
         }
         do {
@@ -232,6 +260,40 @@ struct GitLabClient {
             return jobs.map { GitLabMapper.checkRun(from: $0, pipelineID: newest.id) }
         } catch {
             return [GitLabMapper.checkRun(from: newest)]
+        }
+    }
+
+    // MARK: - Refusals
+
+    /// Turns a refusal into an error that names the fact the reviewer is
+    /// missing.
+    ///
+    /// GitLab names no endpoint on 401, 403 or 404 (see T-046) and five
+    /// requests are in flight while a merge request opens, so "GitLab denied
+    /// access" on its own does not say which part of the screen went blank.
+    ///
+    /// `remedy` is for the case that has no advice of its own. A 404 is the
+    /// ambiguous one and its reading differs per endpoint — from
+    /// `/approvals` it most likely means the tier does not have approvals,
+    /// from `/pipelines` that the project is not visible to this token —
+    /// while a 403 is nearly always scope, which `GitLabError.forbidden`
+    /// already says. A 5xx is passed through untouched: it already carries
+    /// its endpoint and already blames the instance rather than the token.
+    private static func couldNotRead(
+        _ subject: String, remedy: String, error: GitLabError
+    ) -> GitLabError {
+        switch error {
+        case .forbidden(let detail):
+            // Keeps the case, so anything that later branches on "denied"
+            // still can; `forbidden`'s own description appends the scope
+            // advice, which is the usual cause.
+            return .forbidden("Reviewrr could not read \(subject). \(detail)")
+        case .notFound:
+            return .unsupportedByInstance(
+                "Reviewrr could not read \(subject) — this GitLab answered HTTP 404. \(remedy)"
+            )
+        default:
+            return error
         }
     }
 

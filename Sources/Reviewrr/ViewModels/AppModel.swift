@@ -212,6 +212,27 @@ final class AppModel: ObservableObject {
         }
     }
     @Published private(set) var draftSaveError: String?
+    /// Drafts that did not reach disk, keyed by host and reference.
+    ///
+    /// A save failure used to be able to trap the reviewer: `closePR`,
+    /// `loadDemo` and `performLoad` each began `guard persistDraft() else
+    /// { return }`, so on any project whose draft file could not be written
+    /// — every nested GitLab group, until `PRStoreFileName` — clicking back
+    /// to the dashboard did nothing at all and the only way out was to
+    /// force-quit, which is what actually destroyed the review. Navigation no
+    /// longer depends on the save; the unsaved copy is held here instead, so
+    /// leaving the workspace costs nothing and reopening restores it.
+    private var unsavedDrafts: [String: UnsavedDraft] = [:]
+    /// Whether any staged review exists only in this process.
+    var hasUnsavedDrafts: Bool { !unsavedDrafts.isEmpty }
+    /// The one disk write, behind a closure so that "a failed save must not
+    /// trap the reviewer" can be tested. The honest alternative — making the
+    /// reviewer's real Application Support directory unwritable for the
+    /// duration of a test — is destructive, and silently passes when the
+    /// tests run as root. Production never replaces this.
+    var saveDraftToDisk: (ReviewDraft, PRReference, ForgeHost) throws -> Void = {
+        try DraftStore.saveChecked($0, for: $1, host: $2)
+    }
     private var isRestoringDraft = false
     /// Pending debounced save. See `scheduleDraftSave`.
     private var draftSaveTask: Task<Void, Never>?
@@ -649,14 +670,18 @@ final class AppModel: ObservableObject {
             guard reference == nil else { return }
         case .demo:
             loadDemo()
-            guard reference == DemoFixture.reference, draftSaveError == nil else { return }
+            guard reference == DemoFixture.reference else { return }
         case .pullRequest(let target, let host):
             guard host == settings.githubHost else {
                 loadError = "This review belongs to \(host.displayName). Select that GitHub host in Settings before reopening it."
                 return
             }
             await load(target)
-            guard reference == target, loadError == nil, draftSaveError == nil else { return }
+            // Only whether the destination actually opened. A draft that could
+            // not be saved no longer stops navigation, so it must not stop the
+            // history cursor from following it either — that mismatch is what
+            // makes Back and Forward start lying about where they go.
+            guard reference == target, loadError == nil else { return }
         }
         navigationHistory.commit(offset: offset)
     }
@@ -792,10 +817,16 @@ final class AppModel: ObservableObject {
     }
 
     /// Leaves the workspace and returns the window to the dashboard.
-    /// Drafts are already on disk, so nothing is lost by clearing the
-    /// in-memory PR — reopening reloads them.
+    /// Clearing the in-memory PR loses nothing: the draft is either on disk
+    /// or held in `unsavedDrafts`, and reopening restores whichever it is.
     func closePR() {
-        guard persistDraft() else { return }
+        // Best effort, and deliberately not a gate. This used to be
+        // `guard persistDraft() else { return }`, which meant a reviewer
+        // whose draft file could not be written could not leave the
+        // workspace: the button did nothing, forever, with no explanation.
+        // A failed save keeps the draft in `unsavedDrafts` instead, so
+        // clearing the in-memory pull request below loses nothing.
+        persistDraft()
         if !isNavigatingHistory { navigationHistory.visit(.dashboard) }
         pullRequest = nil
         reference = nil
@@ -819,7 +850,8 @@ final class AppModel: ObservableObject {
     /// Loads the bundled fixture PR so the review workspace can be seen
     /// without a GitHub token or network access.
     func loadDemo() {
-        guard persistDraft() else { return }
+        // Not a gate, for the reason `closePR` explains.
+        persistDraft()
         isDemoReview = true
         // Opening the demo is an answer to the sign-in screen: the reviewer
         // asked to look around without an account, so closing the demo
@@ -916,7 +948,10 @@ final class AppModel: ObservableObject {
     }
 
     private func performLoad(_ reference: PRReference) async {
-        guard persistDraft() else { return }
+        // Not a gate, for the reason `closePR` explains: a reviewer whose
+        // draft could not be written must still be able to open another
+        // pull request.
+        persistDraft()
         // First point where the token is genuinely needed. Reading it here
         // rather than at launch means any approval panel is the answer to
         // something the reviewer just did.
@@ -958,7 +993,8 @@ final class AppModel: ObservableObject {
             self.isRestoringDraft = true
             self.isDemoReview = false
             self.draftHost = settings.githubHost
-            self.draft = DraftStore.load(for: reference, host: draftHost)
+            let stored = restoreDraft(for: reference, host: draftHost)
+            self.draft = stored.draft
             self.draft.isDiscarded = nil
             // The pending text lives outside `draft` while the window is
             // open; without this, the next save would write an empty store
@@ -977,7 +1013,14 @@ final class AppModel: ObservableObject {
             self.pullRequest = loadedPR
             if !isNavigatingHistory { navigationHistory.visit(.pullRequest(reference, draftHost)) }
             self.isRestoringDraft = false
-            persistDraft()
+            // Never write back over a file the app could not read. Restoring
+            // used to be followed unconditionally by a save, so a draft that
+            // had merely stopped decoding was overwritten with an empty one
+            // about a second after the reviewer opened the pull request —
+            // unreadable turned into erased. `restoreDraft` has moved the file
+            // aside and put the reason in the banner; the reviewer decides
+            // what happens next.
+            if stored.isWritable { persistDraft() }
             self.files = loadedFiles
             // Cleared on every load, not just a new pull request: a refetch
             // of the same one can carry new commits, and a cached patch from
@@ -1058,7 +1101,55 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func retryDraftSave() { persistDraft() }
+    func retryDraftSave() {
+        flushUnsavedDrafts()
+        persistDraft()
+    }
+
+    /// A draft held in memory because its file could not be written.
+    private struct UnsavedDraft {
+        let reference: PRReference
+        let host: ForgeHost
+        var draft: ReviewDraft
+        /// The write failure, for the banner: the system's own sentence, which
+        /// is the only part that says whether this is a full disk, a
+        /// permission, or something else.
+        var failureReason: String
+    }
+
+    private static func unsavedDraftKey(_ reference: PRReference, host: ForgeHost) -> String {
+        "\(host.identityKey)|\(reference.key)"
+    }
+
+    /// What was on disk for this pull request, and whether that file may be
+    /// written back over.
+    private struct RestoredDraft {
+        var draft: ReviewDraft
+        var isWritable: Bool
+    }
+
+    private func restoreDraft(for reference: PRReference, host: ForgeHost) -> RestoredDraft {
+        // A held copy is newer than the file by definition, and is the only
+        // copy of that work.
+        if let held = unsavedDrafts[Self.unsavedDraftKey(reference, host: host)] {
+            return RestoredDraft(draft: held.draft, isWritable: true)
+        }
+        switch DraftStore.read(for: reference, host: host) {
+        case .absent:
+            return RestoredDraft(draft: ReviewDraft(), isWritable: true)
+        case .decoded(let draft):
+            return RestoredDraft(draft: draft, isWritable: true)
+        case .unreadable(let quarantinedAt, let reason):
+            // Opening with an empty shelf is unavoidable — the file could not
+            // be read — but the reviewer is told, and told where their bytes
+            // went, instead of finding out later that they are gone.
+            let kept = quarantinedAt.map { "It has been kept as \"\($0.lastPathComponent)\"" }
+                ?? "It could not be moved aside either"
+            draftSaveError = "The review staged on \(reference.key) could not be read: \(reason) \(kept), "
+                + "and nothing was overwritten. Comments you add now save normally."
+            return RestoredDraft(draft: ReviewDraft(), isWritable: false)
+        }
+    }
 
     /// Saves after typing stops, rather than on every character.
     ///
@@ -1081,9 +1172,9 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Writes the draft now, cancelling any debounced save. Returns whether
-    /// it reached disk, which is what the callers that must not lose work
-    /// check before moving on.
+    /// Writes the draft now, cancelling any debounced save. Reports whether
+    /// it reached disk — for the banner, not for gating navigation: nothing
+    /// in the app may refuse to move because a save failed.
     @discardableResult
     private func persistDraft() -> Bool {
         draftSaveTask?.cancel()
@@ -1094,15 +1185,63 @@ final class AppModel: ObservableObject {
         saved.referenceKey = reference.key
         saved.title = pullRequest.title
         saved.savedAt = Date()
+        let succeeded = write(saved, for: reference, host: draftHost)
+        if succeeded { dashboard.reloadSavedReviews() }
+        return succeeded
+    }
+
+    /// One write, and the bookkeeping that makes a failed one survivable.
+    ///
+    /// A draft that did not reach disk is held here in memory, keyed by host
+    /// and reference, so leaving the workspace no longer has to mean losing
+    /// it: `restoreDraft` prefers the held copy when that pull request is
+    /// reopened, and `retryDraftSave` tries all of them again. It still only
+    /// lives as long as the process — the banner says so.
+    private func write(_ draft: ReviewDraft, for reference: PRReference, host: ForgeHost) -> Bool {
+        let key = Self.unsavedDraftKey(reference, host: host)
         do {
-            try DraftStore.saveChecked(saved, for: reference, host: draftHost)
-            draftSaveError = nil
-            dashboard.reloadSavedReviews()
+            try saveDraftToDisk(draft, reference, host)
+            unsavedDrafts.removeValue(forKey: key)
+            refreshDraftSaveError()
             return true
         } catch {
-            draftSaveError = "Your review could not be saved locally. Check available disk space and folder permissions before closing this review."
+            unsavedDrafts[key] = UnsavedDraft(
+                reference: reference, host: host, draft: draft,
+                failureReason: (error as NSError).localizedDescription
+            )
+            refreshDraftSaveError()
             return false
         }
+    }
+
+    /// Re-attempts every draft that has not reached disk, not only the one on
+    /// screen: the reviewer may have moved on since the failure, and the held
+    /// copy is the only copy.
+    private func flushUnsavedDrafts() {
+        // A snapshot: `write` mutates the dictionary being iterated.
+        for held in Array(unsavedDrafts.values) {
+            _ = write(held.draft, for: held.reference, host: held.host)
+        }
+    }
+
+    /// The banner reflects what is unsaved, not what failed last. A save that
+    /// succeeds while another pull request's draft is still stuck must not
+    /// clear the warning about it.
+    ///
+    /// It shares one property with the "could not read the stored draft"
+    /// notice `restoreDraft` sets, which is what `RootView`'s banner reads.
+    /// That notice therefore stands until the next successful save — by which
+    /// point the reviewer's current work is safe, which is the point at which
+    /// it stops being urgent.
+    private func refreshDraftSaveError() {
+        guard let stuck = unsavedDrafts.values.sorted(by: { $0.reference.key < $1.reference.key }).first else {
+            draftSaveError = nil
+            return
+        }
+        let detail = unsavedDrafts.count > 1 ? " (and \(unsavedDrafts.count - 1) more)" : ""
+        draftSaveError = "Your review of \(stuck.reference.key)\(detail) could not be saved to disk: "
+            + "\(stuck.failureReason) It is still held in this window — press Retry Save. Quitting before it "
+            + "succeeds loses it."
     }
 
     // MARK: - Draft comments

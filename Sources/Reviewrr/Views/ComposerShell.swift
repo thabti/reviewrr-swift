@@ -59,6 +59,13 @@ struct ComposerShell<Chips: View, Action: View>: View {
                 .strokeBorder(isFocused ? tint.opacity(0.65) : Theme.hairline, lineWidth: isFocused ? 1.5 : 1)
         )
         .motion(Motion.hover, value: isFocused)
+        // The shell already knows whether the reviewer is typing in it, and
+        // its send button is the one control that must only claim ⌘⏎ while
+        // they are — see `ComposerSendButton`. Published through the
+        // environment rather than passed down: this shell has three call
+        // sites and the button is built by each of them, so a parameter is
+        // a thing a fourth one can forget, and forgetting it is silent.
+        .environment(\.composerIsFocused, isFocused)
         .accessibilityElement(children: .contain)
     }
 
@@ -75,8 +82,30 @@ struct ComposerShell<Chips: View, Action: View>: View {
     }
 }
 
+/// Focus, from the enclosing `ComposerShell` down to its send button.
+private struct ComposerFocusKey: EnvironmentKey {
+    /// A send button outside a shell claims nothing — better a button that
+    /// needs a click than a ⌘⏎ that fires in a composer nobody is typing in.
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var composerIsFocused: Bool {
+        get { self[ComposerFocusKey.self] }
+        set { self[ComposerFocusKey.self] = newValue }
+    }
+}
+
 /// The round send button from the reference: one filled circle at the
 /// trailing edge, which becomes a stop button while work is in flight.
+///
+/// ⌘⏎ is claimed **only while the composer this button belongs to has
+/// focus**. Up to three of these are mounted at once — the AI rail, an
+/// inline comment composer, a thread reply — and each used to bind ⌘⏎
+/// unconditionally, alongside the Review menu's own. So a reviewer typing an
+/// inline comment, taught by that composer's own placeholder that ⌘⏎ files
+/// it as a draft, could instead open the Submit Review form or send a
+/// half-written question to a model.
 struct ComposerSendButton: View {
     var tint: Color = Theme.accent
     var isBusy: Bool = false
@@ -85,6 +114,8 @@ struct ComposerSendButton: View {
     var busyHelp: String = "Stop"
     var onSend: () -> Void
     var onStop: (() -> Void)?
+
+    @Environment(\.composerIsFocused) private var isComposerFocused
 
     var body: some View {
         Button {
@@ -102,7 +133,7 @@ struct ComposerSendButton: View {
         }
         .buttonStyle(.plain)
         .disabled(!isBusy && !isEnabled)
-        .keyboardShortcut(.return, modifiers: .command)
+        .keyboardShortcut(isComposerFocused ? Shortcut.sendComposer.keyboardShortcut : nil)
         .help(isBusy ? busyHelp : sendHelp)
         .accessibilityLabel(isBusy ? busyHelp : sendHelp)
         .motion(Motion.snappy, value: isBusy)

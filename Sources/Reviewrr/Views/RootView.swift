@@ -160,15 +160,17 @@ struct RootView: View {
             Task { await model.open(target.reference, host: target.host) }
         }
         .safeAreaInset(edge: .top) {
-            if let error = model.draftSaveError {
-                HStack {
-                    Label(error, systemImage: "exclamationmark.triangle")
-                    Spacer()
-                    Button("Retry Save") { model.retryDraftSave() }
+            VStack(spacing: 0) {
+                if let error = model.draftSaveError {
+                    SaveFailureBanner(message: error) { model.retryDraftSave() }
                 }
-                .font(.callout)
-                .padding(12)
-                .background(Theme.cardBackground)
+                // The watchlist and the read/reviewed marks, whose failures
+                // used to be swallowed whole — see `DashboardModel.saveError`.
+                // In its own view so that it observes the dashboard:
+                // `AppModel` holds that model without republishing it, so a
+                // flag read straight off `model.dashboard` here would stay
+                // off screen until something unrelated redrew the window.
+                DashboardSaveFailureBanner(dashboard: model.dashboard)
             }
         }
         .sheet(isPresented: $model.isCommandPalettePresented) {
@@ -432,5 +434,40 @@ struct RootView: View {
 
     private var errorBinding: Binding<Bool> {
         Binding(get: { model.loadError != nil }, set: { if !$0 { model.loadError = nil } })
+    }
+}
+
+/// "What you are looking at is not on disk yet", with the one control that
+/// can change that.
+///
+/// Not dismissible on purpose: the way out is a write that succeeds, and
+/// something the reviewer can wave away is barely better than the silence
+/// these two failures used to have.
+private struct SaveFailureBanner: View {
+    let message: String
+    let retry: () -> Void
+
+    var body: some View {
+        HStack {
+            Label(message, systemImage: "exclamationmark.triangle")
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            Button("Retry Save", action: retry)
+                .accessibilityHint("Writes the unsaved state to disk again")
+        }
+        .font(.callout)
+        .padding(12)
+        .background(Theme.cardBackground)
+    }
+}
+
+/// The dashboard's failed save, in a view that observes the dashboard.
+private struct DashboardSaveFailureBanner: View {
+    @ObservedObject var dashboard: DashboardModel
+
+    var body: some View {
+        if let error = dashboard.saveError {
+            SaveFailureBanner(message: error) { dashboard.retrySave() }
+        }
     }
 }

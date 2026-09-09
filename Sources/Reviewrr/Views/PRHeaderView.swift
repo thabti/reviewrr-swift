@@ -212,12 +212,37 @@ struct PRHeaderView: View {
         }
     }
 
+    /// A reviewer's decision was a coloured ring and nothing else, so
+    /// "approved" and "blocked" — the two states that matter most on this
+    /// row — were one shape in two hues. The badge carries the meaning; the
+    /// ring keeps reinforcing it.
     private func reviewerAvatar(_ entry: (user: GitHubUser, state: ReviewState)) -> some View {
         AvatarView(urlString: entry.user.avatarUrl, size: 20)
             .overlay(Circle().strokeBorder(ringColor(for: entry.state), lineWidth: 2))
+            .overlay(alignment: .bottomTrailing) {
+                if let badge = ringBadge(for: entry.state) {
+                    Image(systemName: badge)
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(ringColor(for: entry.state))
+                        // Punched out of the avatar so the glyph reads at
+                        // 8pt against whatever the photo happens to be.
+                        .background(Circle().fill(Theme.cardBackground).frame(width: 11, height: 11))
+                        .offset(x: 2, y: 2)
+                }
+            }
             .help("\(entry.user.login) — \(reviewStateLabel(entry.state))")
             .accessibilityHidden(false)
             .accessibilityLabel("\(entry.user.login), \(reviewStateLabel(entry.state))")
+    }
+
+    /// Only the two decisions get a badge. "Commented" and "pending" are not
+    /// verdicts, and badging them would bury the two that are.
+    private func ringBadge(for state: ReviewState) -> String? {
+        switch state {
+        case .approved: return "checkmark.circle.fill"
+        case .changesRequested: return "xmark.circle.fill"
+        case .commented, .pending, .dismissed: return nil
+        }
     }
 
     // MARK: - Derived state
@@ -302,6 +327,17 @@ struct PRHeaderView: View {
     }
 }
 
+/// The CI rollup, in the toolbar chip and the detail popover.
+///
+/// It was a 6pt circle whose only channel was hue — red and green at that
+/// size, in the same shape, is the textbook protanopia/deuteranopia failure,
+/// and in the chip it is the *only* signal. `.help` revealed it on hover, and
+/// a per-glance hover is not an at-a-glance indicator.
+///
+/// The glyphs are deliberately the same ones the per-check rows already use
+/// (`ChecksListView.CheckRow.icon`), so the chip and the list it summarises
+/// cannot disagree about what a state looks like. Colour now reinforces the
+/// shape rather than carrying the meaning alone.
 private struct CIRollupDot: View {
     let state: CheckRollup.OverallState
 
@@ -311,6 +347,18 @@ private struct CIRollupDot: View {
         case .failure: return .red
         case .pending: return .yellow
         case .noChecks: return .secondary
+        }
+    }
+
+    private var symbol: String {
+        switch state {
+        case .success: return "checkmark.circle.fill"
+        case .failure: return "xmark.circle.fill"
+        // A dotted ring rather than a filled one: pending has to be
+        // distinguishable from passing in a screenshot, where the pulse
+        // below is not.
+        case .pending: return "circle.dotted"
+        case .noChecks: return "circle"
         }
     }
 
@@ -324,17 +372,16 @@ private struct CIRollupDot: View {
     }
 
     var body: some View {
-        // Pending checks are the one state that's genuine in-flight work,
-        // so it's the one that pulses — a static dot for every other state
-        // keeps the "nothing loops without a reason" rule.
-        Group {
-            if state == .pending {
-                ActivityDot(color: color, size: 6)
-            } else {
-                Circle().fill(color).frame(width: 6, height: 6)
-            }
-        }
-        .help(label)
-        .accessibilityLabel(label)
+        // Pending checks are the one state that's genuine in-flight work, so
+        // it stays the only one that moves — the "nothing loops without a
+        // reason" rule. It is now the glyph that pulses rather than a bare
+        // dot, so the shape still says "pending" when the motion is gone,
+        // whether that is a screenshot or Reduce Motion.
+        Image(systemName: symbol)
+            .font(.system(size: Theme.iconSmallSize, weight: .semibold))
+            .foregroundStyle(color)
+            .symbolEffect(.pulse, isActive: state == .pending)
+            .help(label)
+            .accessibilityLabel(label)
     }
 }

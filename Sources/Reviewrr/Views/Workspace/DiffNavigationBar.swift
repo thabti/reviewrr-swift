@@ -90,12 +90,12 @@ struct DiffNavigationBar: View {
             viewedToggle
             divider
             group("doc.text", label: "Files") {
-                navButton("chevron.up", "Previous file (k)") { moveFile(-1) }
-                navButton("chevron.down", "Next file (j)") { moveFile(1) }
+                navButton("chevron.up", "Previous file (\(Shortcut.previousFile.display))") { moveFile(-1) }
+                navButton("chevron.down", "Next file (\(Shortcut.nextFile.display))") { moveFile(1) }
             }
             divider
             group("plus.forwardslash.minus", label: "Changes") {
-                navButton("chevron.up", "Previous change (p)") { moveHunk(-1) }
+                navButton("chevron.up", "Previous change (\(Shortcut.previousChange.display))") { moveHunk(-1) }
                 if let position = changePosition {
                     counter(
                         "\(position.index)/\(position.total)",
@@ -103,7 +103,7 @@ struct DiffNavigationBar: View {
                         help: "Change \(position.index) of \(position.total) in this file"
                     )
                 }
-                navButton("chevron.down", "Next change (n)") { moveHunk(1) }
+                navButton("chevron.down", "Next change (\(Shortcut.nextChange.display))") { moveHunk(1) }
             }
             divider
             group("bubble.left.and.bubble.right", label: "Comments") {
@@ -148,17 +148,23 @@ struct DiffNavigationBar: View {
         .accessibilityLabel("Diff navigation")
     }
 
-    /// Mark the open file viewed, or un-mark it.
+    /// Mark the open file viewed and move on, or un-mark it and stay.
     ///
     /// A filled tick when the file is done, a hollow one when it is not —
     /// state a reviewer can read without hovering, and the same ⇧⌘V the
     /// menu bar binds. The count beside it is the review's progress, which
     /// is the reason to press it: 12/31 says how much is left.
+    ///
+    /// This tooltip taught ⇧⌘V as "mark viewed" while the button only
+    /// toggled the flag, so a reviewer who trusted it and pressed twice
+    /// un-marked the file they had just finished. Button, key, menu item
+    /// and palette command all call `markViewedAndAdvance` now, and the
+    /// chord is printed from `Shortcut` rather than spelled out here.
     private var viewedToggle: some View {
         HStack(spacing: 4) {
             Button {
                 guard let filename = model.selectedFile else { return }
-                model.toggleViewed(filename)
+                model.markViewedAndAdvance(filename)
             } label: {
                 Image(systemName: isCurrentFileViewed ? "checkmark.circle.fill" : "checkmark.circle")
                     .symbolRenderingMode(isCurrentFileViewed ? .palette : .hierarchical)
@@ -169,8 +175,12 @@ struct DiffNavigationBar: View {
             .buttonStyle(.reviewrrGhost)
             .controlSize(.small)
             .disabled(model.selectedFile == nil)
-            .help(isCurrentFileViewed ? "Mark this file not viewed (⇧⌘V)" : "Mark this file viewed (⇧⌘V)")
-            .accessibilityLabel(isCurrentFileViewed ? "Mark this file not viewed" : "Mark this file viewed")
+            .help(isCurrentFileViewed
+                  ? "Mark this file not viewed and stay here (\(Shortcut.markViewedMenu.display))"
+                  : "Mark this file viewed and open the next unread one (\(Shortcut.markViewedMenu.display))")
+            .accessibilityLabel(isCurrentFileViewed
+                                ? "Mark this file not viewed and stay here"
+                                : "Mark this file viewed and open the next unread one")
 
             let progress = viewedProgress
             if progress.total > 0 {

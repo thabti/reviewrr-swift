@@ -14,6 +14,9 @@ struct ProjectSidebarView: View {
 
     @State private var searchText = ""
     @FocusState private var searchFocused: Bool
+    /// The project waiting on a confirmed removal. Held here rather than in
+    /// the row so there is one dialog for the list instead of one per row.
+    @State private var pendingRemoval: WatchedProject?
 
     /// Rows this list can select: the synthetic "All Projects" row plus one
     /// per watched project. Bridging to `model.selectedProjectKey` directly
@@ -62,6 +65,26 @@ struct ProjectSidebarView: View {
         // the dashboard was a hand-rolled `HStack`, threw the vibrancy away
         // to fix a mismatch the native sidebar does not have.
         .background(alignment: .topLeading) { focusShortcut }
+        // One menu click used to unwatch a project outright, taking its mute
+        // and notification settings with it and leaving nothing to undo with.
+        // Same shape as "Clear All Drafts…" in the Data pane: an ellipsis on
+        // the control, and a dialog that says what is actually lost and what
+        // is not.
+        .confirmationDialog(
+            pendingRemoval.map { "Remove \($0.nameWithOwner)?" } ?? "",
+            isPresented: Binding(
+                get: { pendingRemoval != nil },
+                set: { if !$0 { pendingRemoval = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingRemoval
+        ) { project in
+            Button("Remove", role: .destructive) { remove(project) }
+                .help("Stop watching \(project.nameWithOwner)")
+            Button("Cancel", role: .cancel) {}
+        } message: { project in
+            Text(removalExplanation(project))
+        }
     }
 
     // MARK: - Header
@@ -231,7 +254,7 @@ struct ProjectSidebarView: View {
                                 onToggleMute: { model.toggleMute(project) },
                                 onCopyURL: { copyURL(project) },
                                 onOpenGitHub: { NSWorkspace.shared.open(project.webURL) },
-                                onRemove: { remove(project) }
+                                onRemove: { pendingRemoval = project }
                             )
                             .tag(Row.project(project.key))
                             .motionTransition(.reviewrrRow)
@@ -383,6 +406,20 @@ struct ProjectSidebarView: View {
         NSPasteboard.general.setString(project.webURL.absoluteString, forType: .string)
     }
 
+    /// What unwatching costs, and what it does not.
+    ///
+    /// The mute and notification level live on `WatchedProject`, so they go
+    /// with it and re-watching starts from the defaults — that is the part
+    /// the word "Remove" gives no hint of. Local status and drafts are keyed
+    /// by pull request, not by project, so they survive; saying so is what
+    /// makes this dialog answerable rather than frightening.
+    private func removalExplanation(_ project: WatchedProject) -> String {
+        let changes = project.host.forge.changeNoun + "s"
+        return "\(project.nameWithOwner) leaves the watchlist, and its mute and notification settings go with it — "
+            + "watching it again starts from the defaults. Its \(changes) leave the inbox. "
+            + "Nothing changes on \(project.host.forge.displayName), and the drafts and reviewed marks you have on them are kept."
+    }
+
     /// Clears the selection first if the removed project was the one
     /// filtering the inbox — otherwise the inbox would keep filtering to a
     /// project key nothing in the sidebar can select anymore.
@@ -505,7 +542,7 @@ private struct ProjectRowView: View {
         Button("Copy URL", action: onCopyURL)
         Button("Open on GitHub", action: onOpenGitHub)
         Divider()
-        Button("Remove", role: .destructive, action: onRemove)
+        Button("Remove…", role: .destructive, action: onRemove)
     }
 
     @ViewBuilder

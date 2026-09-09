@@ -143,10 +143,25 @@ struct SubmitReviewForm: View {
 
     // MARK: - Event
 
+    /// The events *this host* can perform, and what each of them does there.
+    ///
+    /// It used to be `ForEach(ReviewEvent.allCases)`, which is GitHub's
+    /// three on every forge — so a GitLab reviewer was offered "Request
+    /// changes" under the words "Blocks merging until changes are made" for
+    /// a mechanism GitLab does not have. `ForgeReviewAction` owns that
+    /// wording per forge; this view only draws it.
+    private var actions: [ForgeReviewAction] {
+        ForgeReviewAction.all(on: model.settings.githubHost.forge)
+    }
+
+    private var selectedAction: ForgeReviewAction {
+        ForgeReviewAction.action(for: model.draft.event, on: model.settings.githubHost.forge)
+    }
+
     private var eventPicker: some View {
         VStack(alignment: .leading, spacing: 6) {
             Picker("Review type", selection: $model.draft.event) {
-                ForEach(ReviewEvent.allCases) { Text($0.label).tag($0) }
+                ForEach(actions) { Text($0.label).tag($0.event) }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -154,39 +169,33 @@ struct SubmitReviewForm: View {
             // accent is green, so a selected "Comment" segment was filled
             // the same green as "Approve" — the control looked like it was
             // approving whatever was selected.
-            .tint(eventColor)
+            .tint(Self.color(for: selectedAction.emphasis))
             .accessibilityLabel("Review type")
 
             eventDescription
         }
     }
 
-    /// A plain segmented control doesn't carry approve/request-changes
-    /// weight on its own; this line spells out what pressing the button will
-    /// actually do, coloured to match.
+    /// A plain segmented control doesn't carry approve/withhold weight on
+    /// its own; this line spells out what pressing the button will actually
+    /// do on this host, coloured to match.
     private var eventDescription: some View {
-        Label(eventCopy.text, systemImage: eventCopy.icon)
+        Label(selectedAction.detail, systemImage: selectedAction.systemImage)
             .font(.caption)
-            .foregroundStyle(eventCopy.color)
+            .foregroundStyle(Self.color(for: selectedAction.emphasis))
             .fixedSize(horizontal: false, vertical: true)
     }
 
-    private var eventCopy: (icon: String, text: String, color: Color) {
-        switch model.draft.event {
-        case .comment:
-            return ("bubble.left", "Leaves feedback without approving or blocking.", .secondary)
-        case .approve:
-            return ("checkmark.seal.fill", "Approves the pull request as ready to merge.", .green)
-        case .requestChanges:
-            return ("exclamationmark.triangle.fill", "Blocks merging until changes are made.", .red)
-        }
-    }
-
-    private var eventColor: Color {
-        switch model.draft.event {
-        case .comment: return .secondary
-        case .approve: return .green
-        case .requestChanges: return .red
+    /// Red is reserved for an event that genuinely blocks a merge, which is
+    /// GitHub's alone. GitLab's third choice is amber: it does something
+    /// real — publishes the comments, withdraws an approval — but not the
+    /// thing red would promise.
+    private static func color(for emphasis: ForgeReviewAction.Emphasis) -> Color {
+        switch emphasis {
+        case .neutral: return .secondary
+        case .affirmative: return .green
+        case .blocking: return .red
+        case .caution: return .orange
         }
     }
 
@@ -367,19 +376,20 @@ struct SubmitReviewForm: View {
                     // decides whether this approves or blocks a merge, and
                     // a button reading "Submit" left that decision legible
                     // only in the control the reviewer had already stopped
-                    // looking at.
-                    Text(model.draft.event.label)
+                    // looking at. The forge's verb, too: on GitLab the third
+                    // choice is "Revoke approval", not "Request changes".
+                    Text(selectedAction.label)
                 }
             }
             .buttonStyle(.borderedProminent)
-            .tint(model.draft.event == .requestChanges ? .red : Theme.accent)
+            .tint(selectedAction.emphasis == .blocking ? .red : Theme.accent)
             // ⌘Return, not Return: the summary field above is a multi-line
             // editor, and Return there has to insert a line rather than send
             // the review to GitHub.
             .keyboardShortcut(.return, modifiers: .command)
             .disabled(model.isSubmittingReview || disabledReason != nil)
-            .help(disabledReason ?? "\(model.draft.event.label) this pull request (⌘⏎)")
-            .accessibilityLabel("\(model.draft.event.label) this pull request")
+            .help(disabledReason ?? "\(selectedAction.actionDescription) (⌘⏎)")
+            .accessibilityLabel(selectedAction.actionDescription)
         }
         .padding(.horizontal, Theme.Space.l)
         .padding(.vertical, Theme.Space.m)

@@ -33,8 +33,44 @@ struct LocalPRStatus: Codable, Equatable {
     /// `isUpdatedSinceReview` precisely across force-pushes.
     var reviewedAtHeadSha: String?
 
+    init() {}
+
     static func key(owner: String, repo: String, number: Int) -> String {
         "\(owner)/\(repo)#\(number)"
+    }
+
+    // MARK: - Forward-compatible decoding
+    //
+    // Written out for the reason `Forge.swift:78-85` documents — a
+    // synthesized decoder throws `keyNotFound` for a missing key even when
+    // the property has a default — and taken one step further than the other
+    // hand-written decoders in the app: this one cannot throw at all.
+    //
+    // `LocalStatusStore` decodes the whole file as one `[String:
+    // LocalPRStatus]`, so a single unreadable entry used to take the entire
+    // read/reviewed/ignored map with it: every PR back to "New", every
+    // ignored PR shouting again, no error anywhere. Every field here has a
+    // sane default and the type is purely local bookkeeping, so the worst a
+    // broken entry can now cost is one PR's triage state.
+    enum CodingKeys: String, CodingKey {
+        case status, lastSeenUpdatedAt, reviewedAtHeadSha
+    }
+
+    init(from decoder: Decoder) throws {
+        // Legal to return early: every property is defaulted, so `self` is
+        // already whole. This is the branch for an entry that is not a JSON
+        // object at all.
+        guard let container = try? decoder.container(keyedBy: CodingKeys.self) else { return }
+        status = ((try? container.decodeIfPresent(LocalReviewStatus.self, forKey: .status)) ?? nil) ?? .none
+        lastSeenUpdatedAt = (try? container.decodeIfPresent(Date.self, forKey: .lastSeenUpdatedAt)) ?? nil
+        reviewedAtHeadSha = (try? container.decodeIfPresent(String.self, forKey: .reviewedAtHeadSha)) ?? nil
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(status, forKey: .status)
+        try container.encodeIfPresent(lastSeenUpdatedAt, forKey: .lastSeenUpdatedAt)
+        try container.encodeIfPresent(reviewedAtHeadSha, forKey: .reviewedAtHeadSha)
     }
 
     // MARK: - Derived signals

@@ -133,7 +133,7 @@ struct DraftCommentRow: View {
                     Button("Done") { commitEdit() }
                     .buttonStyle(.reviewrrPrimary)
                     .controlSize(.small)
-                    .keyboardShortcut(.return, modifiers: .command)
+                    // No ⌘⏎ here: it is the focused composer's, and this button advertises nothing (T-030).
                 }
             } else {
                 MarkdownText(text: comment.body)

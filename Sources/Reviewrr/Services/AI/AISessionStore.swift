@@ -73,11 +73,18 @@ enum AISessionStore {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let dir = base.appendingPathComponent("Reviewrr/ai-sessions", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // See `PRStoreFileName`: the old name held a slash for any nested
+        // GitLab group, so an Ask transcript on one of those projects was
+        // never written — the panel reset itself on every reopen, which is
+        // exactly the behaviour this store exists to stop.
+        PRStoreFileName.migrateLegacyNames(in: dir, host: .dotCom) {
+            PRStoreFileName.legacyReference(fileName: $0.lastPathComponent)
+        }
         return dir
     }
 
     private static func fileURL(for reference: PRReference) -> URL {
-        directory().appendingPathComponent("\(reference.owner)_\(reference.repo)_\(reference.number).json")
+        directory().appendingPathComponent(PRStoreFileName.json(for: reference))
     }
 
     static func load(for reference: PRReference, now: Date = Date()) -> AISession {

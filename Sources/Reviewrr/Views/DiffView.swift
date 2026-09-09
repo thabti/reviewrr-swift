@@ -218,7 +218,11 @@ struct DiffContainerView: View {
         .focusable()
         .focusEffectDisabled(false)
         .focused($containerFocused)
-        .onKeyPress(characters: CharacterSet(charactersIn: "jknpvu/?")) { press in
+        // The set comes from `Shortcut`, not a string typed out here: the
+        // shortcuts sheet advertises those same letters, and a key that is
+        // documented but not listened for is the defect this pane can
+        // produce on its own.
+        .onKeyPress(characters: CharacterSet(charactersIn: Shortcut.diffPaneKeyCharacters)) { press in
             // Every one of these is an unmodified letter, so each one is also
             // a character somebody might be trying to type. Asking a question
             // in the AI rail and reaching `?` opened the shortcuts sheet over
@@ -235,6 +239,24 @@ struct DiffContainerView: View {
             return .handled
         }
         .task { containerFocused = true }
+        // Focus used to be asserted exactly once, above, and never again —
+        // so whatever took it kept it. The file filter could not hand the
+        // keyboard back on Escape, and j/k could still be dead after the
+        // shortcuts sheet or the ⌘K palette closed, with nothing on screen
+        // to explain why.
+        .onChange(of: workspace.diffFocusRequested) { _, requested in
+            guard requested else { return }
+            containerFocused = true
+            workspace.diffFocusRequested = false
+        }
+        .onChange(of: workspace.showShortcuts) { _, presented in
+            guard !presented else { return }
+            requestFocusUnlessTyping()
+        }
+        .onChange(of: model.isCommandPalettePresented) { _, presented in
+            guard !presented else { return }
+            requestFocusUnlessTyping()
+        }
         .task(id: model.reference?.key) {
             guard let reference = model.reference else { return }
             workspace.configureIfNeeded(prKey: reference.key, hiddenFileCategories: model.settings.hiddenFileCategories)
@@ -411,6 +433,17 @@ struct DiffContainerView: View {
         }
     }
 
+    /// Takes the keyboard back after a modal surface closes — unless the
+    /// reviewer was mid-sentence in a composer when they opened it, in
+    /// which case the caret is theirs to keep. The responder check is the
+    /// best answer available at this moment: the sheet's window is on its
+    /// way out, so this can read the restored responder or the tail of the
+    /// dismissal, and being wrong costs a click rather than any text.
+    private func requestFocusUnlessTyping() {
+        guard !Self.isTypingInTextControl else { return }
+        workspace.diffFocusRequested = true
+    }
+
     /// Whether the keyboard currently belongs to something being typed into.
     ///
     /// SwiftUI focus and AppKit's first responder are two different things,
@@ -433,31 +466,15 @@ struct DiffContainerView: View {
         case "k": moveFile(-1)
         case "n": moveHunk(1)
         case "p": moveHunk(-1)
-        case "v": markViewedAndAdvance()
+        case "v":
+            guard let path = openFile?.filename else { return }
+            model.markViewedAndAdvance(path)
         case "u":
             model.settings.diffLayout = model.settings.diffLayout == .split ? .unified : .split
             model.persistSettings()
         case "/": workspace.searchFieldFocusRequested = true
         case "?": workspace.showShortcuts = true
         default: break
-        }
-    }
-
-    /// Finishing a file and moving on is one action, so it is one keystroke.
-    ///
-    /// `v` used to mark the file viewed and fold it in place, leaving the
-    /// reviewer looking at a collapsed header and needing a second keystroke
-    /// to get anywhere — 675 files, 1,350 presses. It now marks the file and
-    /// opens the next one that still needs reading; pressing it on a file
-    /// that is already viewed un-marks it and stays put, so the gesture
-    /// remains its own undo.
-    private func markViewedAndAdvance() {
-        guard let path = openFile?.filename else { return }
-        let wasViewed = model.draft.viewedFiles.contains(path)
-        model.toggleViewed(path)
-        guard !wasViewed else { return }
-        if let next = workspace.nextUnviewedPath(after: path, viewedFiles: model.draft.viewedFiles) {
-            model.selectedFile = next
         }
     }
 

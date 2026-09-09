@@ -82,6 +82,14 @@ struct FilterBarView: View {
 
     // MARK: - Search row
 
+    /// Both keys, from the catalog: the one that gets in and — the part
+    /// that was missing — the one that gets out again.
+    private static var searchHelp: String {
+        let escape = Shortcut.clearFileFilter.display
+        return "Filter files by path (\(Shortcut.focusFileFilter.display)) — "
+            + "\(escape) clears it, \(escape) again gives the keyboard back to the diff"
+    }
+
     /// A recess in the header's material rather than a card on top of it:
     /// one fill, one hairline, and the accent ring only while focused. Held
     /// to `Theme.controlHeight` so the whole filter block is a round 44pt,
@@ -91,7 +99,7 @@ struct FilterBarView: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: Theme.iconMediumSize))
                 .foregroundStyle(searchFocused ? Theme.accent : .secondary)
-                .help("Filter files by path (/)")
+                .help(Self.searchHelp)
                 .accessibilityHidden(true)
 
             TextField("Filter files", text: $searchDraft)
@@ -99,8 +107,29 @@ struct FilterBarView: View {
                 .font(Theme.body)
                 .focused($searchFocused)
                 .frame(maxWidth: .infinity)
-                .help("Filter files by path (/)")
+                .help(Self.searchHelp)
                 .accessibilityLabel("Filter files by path")
+                // `/` moved the keyboard in here and nothing moved it out:
+                // Escape did nothing, and j/k/n/p/v/u/? were dead until the
+                // reviewer clicked the diff with a mouse — in the one pane
+                // of the one app whose entire premise is not needing one.
+                // Both dashboard search fields already did this; this field
+                // is the one that never got it.
+                //
+                // Releasing focus is only half of it. SwiftUI focus moved
+                // *here* when the field took it, so clearing this field
+                // leaves focus nowhere and the pane's `onKeyPress` still
+                // silent — the diff has to be asked to take it back.
+                .onKeyPress(.escape) {
+                    switch workspace.escapeInFileFilter(typed: searchDraft) {
+                    case .clearedText:
+                        searchDebounce?.cancel()
+                        searchDraft = ""
+                    case .releasedFocusToDiff:
+                        searchFocused = false
+                    }
+                    return .handled
+                }
 
             if !searchDraft.isEmpty {
                 Button {
