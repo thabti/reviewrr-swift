@@ -1,0 +1,115 @@
+name: Reviewrr
+options:
+  bundleIdPrefix: com.sabeur
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1"
+    CURRENT_PROJECT_VERSION: "1"
+    # Signing identity, and why it is not "-".
+    #
+    # Ad-hoc signing ("-") gives the binary a *new* identity on every build.
+    # macOS ties a Keychain item to the identity that created it, so every
+    # rebuild looked like a different application asking for another app's
+    # secret, and the reviewer was asked to approve it again — approving never
+    # stuck, because the next build was another stranger.
+    #
+    # A stable certificate makes the identity the same across rebuilds and the
+    # asking stops. Override locally with:
+    #   xcodebuild ... CODE_SIGN_IDENTITY="Apple Development: Your Name (XXXXXXXXXX)"
+    #
+    # `security find-identity -v -p codesigning` lists what this Mac has.
+    DEVELOPMENT_TEAM: "N762FB52VL"
+    CODE_SIGN_IDENTITY: "Developer ID Application"
+    CODE_SIGN_STYLE: Manual
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: NO
+
+targets:
+  Reviewrr:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/Reviewrr
+    # An explicit Info.plist rather than `GENERATE_INFOPLIST_FILE`.
+    #
+    # The generated plist only accepts keys from Xcode's own allowlist: an
+    # `INFOPLIST_KEY_ReviewrrGitHubClientID` setting is silently dropped
+    # rather than rejected, so the app shipped with no client ID and sign-in
+    # looked unconfigured no matter what the build passed in. A real plist
+    # takes any key, and Xcode still expands `$(SETTING)` inside its values.
+    info:
+      path: Supporting/Info.plist
+      properties:
+        CFBundleDisplayName: Reviewrr
+        # XcodeGen's own defaults for these two are a hardcoded 1.0/1, which
+        # would quietly stop tracking the versions set above.
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSApplicationCategoryType: public.app-category.developer-tools
+        # `reviewrr://owner/repo/number` deep links. Registering the scheme
+        # is what lets `open reviewrr://acme/web-app/482`, a link in a chat
+        # message, or a Shortcut reach the app — and it launches the app if
+        # it is not already running. Viewer, not Editor: a link opens a pull
+        # request for review, it never writes anything.
+        CFBundleURLTypes:
+          - CFBundleURLName: com.sabeur.reviewrr.pull-request
+            CFBundleTypeRole: Viewer
+            CFBundleURLSchemes:
+              - reviewrr
+        LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
+        NSHumanReadableCopyright: Reviewrr
+        # The OAuth client ID "Continue with GitHub" signs in as. Empty by
+        # default: this repository ships no OAuth app of its own. A build
+        # stamps one in without editing a file —
+        #
+        #   xcodebuild ... REVIEWRR_GITHUB_CLIENT_ID=Ov23liXXXXXXXXXXXXXX
+        #
+        # A client ID is public by design (it appears in every OAuth URL),
+        # so baking it into the bundle is correct. The client *secret* is not
+        # needed by the device flow and must never be added here.
+        #
+        # With none configured, sign-in offers a personal access token and a
+        # field to paste a client ID into instead. Both the empty expansion
+        # and an unexpanded `$(…)` are rejected by `GitHubOAuthApp.sanitize`.
+        ReviewrrGitHubClientID: "$(REVIEWRR_GITHUB_CLIENT_ID)"
+    settings:
+      base:
+        PRODUCT_NAME: Reviewrr
+        REVIEWRR_GITHUB_CLIENT_ID: ""
+        # The icon lives in an asset catalog rather than a bare .icns so
+        # macOS can pick the right representation per context (Dock, Finder
+        # list, Get Info) instead of scaling one bitmap for all of them.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        PRODUCT_BUNDLE_IDENTIFIER: com.sabeur.reviewrr
+        # Sandbox off, deliberate: this is an ad-hoc-signed dev build with no
+        # team ID. A sandboxed app's Keychain access group is derived from
+        # the code signature, so an ad-hoc signature makes the GitHub token
+        # unreadable after every rebuild (it silently vanishes, no prompt).
+        # Non-sandboxed Keychain items use a per-app ACL instead and survive
+        # rebuilds. Revisit if this ever gets a real Developer ID.
+        ENABLE_HARDENED_RUNTIME: NO
+        ENABLE_APP_SANDBOX: NO
+        COMBINE_HIDPI_IMAGES: YES
+
+  ReviewrrTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      # Sources are compiled into the test bundle directly rather than
+      # hosted from the app target. Everything except App/ and Views/ is
+      # included: App/ would duplicate @main, and view code is verified by
+      # the app build rather than unit tests.
+      - path: Tests/ReviewrrTests
+      - path: Sources/Reviewrr/Models
+      - path: Sources/Reviewrr/Services
+      - path: Sources/Reviewrr/ViewModels
+      - path: Sources/Reviewrr/Design
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.sabeur.reviewrr.tests
+        GENERATE_INFOPLIST_FILE: YES
