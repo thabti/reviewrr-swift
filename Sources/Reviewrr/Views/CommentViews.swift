@@ -87,6 +87,12 @@ struct DraftCommentRow: View {
     @State private var editing = false
     @State private var text = ""
 
+    private func commitEdit() {
+        guard editing else { return }
+        if comment.body != text { model.updateDraftComment(comment.id, body: text) }
+        editing = false
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
@@ -108,20 +114,23 @@ struct DraftCommentRow: View {
                     .accessibilityLabel("Delete draft comment")
             }
             if editing {
-                TextEditor(text: Binding(
-                    get: { model.draft.comments.first(where: { $0.id == comment.id })?.body ?? text },
-                    set: { text = $0; model.updateDraftComment(comment.id, body: $0) }
-                ))
+                // Local, and committed when editing ends. Writing through
+                // on every character mutated the review draft, which
+                // republishes `AppModel` — and this editor sits inside the
+                // diff pane, so each keystroke re-rendered the diff behind
+                // it. `Edit` seeds `text` from the comment, so the read side
+                // of the old binding bought nothing.
+                TextEditor(text: $text)
                     .font(.callout)
                     .frame(minHeight: 50)
                     .padding(4)
                     .background(Theme.codeBackground, in: RoundedRectangle(cornerRadius: 6))
+                    // Clicking away, or the row being recycled mid-edit,
+                    // must not throw the edit away.
+                    .onDisappear { commitEdit() }
                 HStack {
                     Spacer()
-                    Button("Done") {
-                        model.updateDraftComment(comment.id, body: text)
-                        editing = false
-                    }
+                    Button("Done") { commitEdit() }
                     .buttonStyle(.reviewrrPrimary)
                     .controlSize(.small)
                     .keyboardShortcut(.return, modifiers: .command)

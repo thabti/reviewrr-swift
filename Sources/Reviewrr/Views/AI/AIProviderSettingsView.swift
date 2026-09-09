@@ -7,6 +7,7 @@ struct AIProviderSettingsView: View {
     @ObservedObject var model: AIModel
 
     @State private var apiKeyInput: String = ""
+    @State private var modelNameCommit: Task<Void, Never>?
     @State private var baseURLInput: String = ""
     @State private var customModelInput: String = ""
     @State private var savedKeyPresent: Bool = false
@@ -114,8 +115,20 @@ struct AIProviderSettingsView: View {
                     prompt: Text(descriptor.defaultModel.isEmpty ? "Model name" : descriptor.defaultModel)
                 )
                 .accessibilityLabel("Model name")
-                .onSubmit { model.selectModel(customModelInput) }
-                .onChange(of: customModelInput) { _, newValue in model.selectModel(newValue) }
+                .onSubmit { commitModelName() }
+                // Debounced, not per character: `selectModel` re-encodes and
+                // rewrites the whole settings blob, republishes `AppModel`,
+                // and re-reads which providers hold a key — a Keychain query
+                // each — so typing a model name paid all of that per
+                // keystroke.
+                .onChange(of: customModelInput) { _, _ in
+                    modelNameCommit?.cancel()
+                    modelNameCommit = Task {
+                        try? await Task.sleep(for: .milliseconds(300))
+                        guard !Task.isCancelled else { return }
+                        commitModelName()
+                    }
+                }
             }
 
             if descriptor.supportsReasoningEffort {
@@ -158,6 +171,9 @@ struct AIProviderSettingsView: View {
         .formStyle(.grouped)
         .onAppear { loadFieldsForCurrentProvider() }
         .task(id: model.providerID) { await refreshAgentAvailability(force: false) }
+        // Leaving the pane must not lose a model name typed inside the
+        // debounce window.
+        .onDisappear { commitModelName() }
     }
 
     // MARK: - Apple Intelligence status
@@ -374,6 +390,13 @@ struct AIProviderSettingsView: View {
         showKeySavedConfirmation = false
     }
 
+    private func commitModelName() {
+        modelNameCommit?.cancel()
+        modelNameCommit = nil
+        guard model.modelID != customModelInput else { return }
+        model.selectModel(customModelInput)
+    }
+
     private func saveKey() {
         let trimmed = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -381,6 +404,9 @@ struct AIProviderSettingsView: View {
         apiKeyInput = ""
         savedKeyPresent = true
         showKeySavedConfirmation = true
+        // The composer's model menu lists only providers that can answer;
+        // this one just became one of them.
+        model.refreshReadyProviders()
         // Self-dismissing rather than requiring a click to clear — this is
         // a confirmation, not a message that needs acknowledging.
         Task { @MainActor in

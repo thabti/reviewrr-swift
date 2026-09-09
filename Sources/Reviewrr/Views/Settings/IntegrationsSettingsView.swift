@@ -21,6 +21,20 @@ struct IntegrationsSettingsView: View {
     @Environment(\.openURL) private var openURL
     @State private var showsAdvanced = false
 
+    /// The two free-text fields are typed into locally and committed once
+    /// typing stops.
+    ///
+    /// Every character used to write the whole settings blob — a JSON
+    /// encode into `UserDefaults` — and republish `AppModel`, which
+    /// re-renders this surface. The project-keys field was worse than slow:
+    /// its getter normalised the text (`sorted().joined(", ")`), so the
+    /// field rewrote what was being typed between one keystroke and the
+    /// next.
+    @State private var addressDraft = ""
+    @State private var projectKeysDraft = ""
+    @State private var addressCommit: Task<Void, Never>?
+    @State private var projectKeysCommit: Task<Void, Never>?
+
     private var tracker: Binding<IssueTrackerSettings> {
         Binding(
             get: { model.settings.issueTracker },
@@ -44,6 +58,16 @@ struct IntegrationsSettingsView: View {
                 advanced
             }
             privacyNote
+        }
+        .task {
+            addressDraft = settings.baseURL
+            projectKeysDraft = settings.projectKeys.sorted().joined(separator: ", ")
+        }
+        // Leaving the pane inside the debounce window must not lose what
+        // was typed.
+        .onDisappear {
+            commitAddress(addressDraft)
+            commitProjectKeys(projectKeysDraft)
         }
     }
 
@@ -115,7 +139,7 @@ struct IntegrationsSettingsView: View {
         VStack(alignment: .leading, spacing: Theme.Space.s) {
             sectionLabel("Your Jira address", systemImage: "link")
 
-            TextField(settings.detectedKind.placeholder, text: tracker.baseURL)
+            TextField(settings.detectedKind.placeholder, text: $addressDraft)
                 .textFieldStyle(.plain)
                 .font(.system(size: 15, design: .monospaced))
                 .padding(.horizontal, Theme.Space.m)
@@ -126,6 +150,14 @@ struct IntegrationsSettingsView: View {
                         .strokeBorder(addressBorderColor)
                 )
                 .accessibilityLabel("Jira address")
+                .onChange(of: addressDraft) { _, typed in
+                    addressCommit?.cancel()
+                    addressCommit = Task {
+                        try? await Task.sleep(for: .milliseconds(300))
+                        guard !Task.isCancelled else { return }
+                        commitAddress(typed)
+                    }
+                }
 
             addressFeedback
         }
@@ -287,9 +319,17 @@ struct IntegrationsSettingsView: View {
                     Text("Only link these projects")
                         .font(Theme.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
-                    TextField("EC, MW — blank for any", text: projectKeysText)
+                    TextField("EC, MW — blank for any", text: $projectKeysDraft)
                         .textFieldStyle(.roundedBorder)
                         .accessibilityLabel("Allowed project keys")
+                        .onChange(of: projectKeysDraft) { _, typed in
+                            projectKeysCommit?.cancel()
+                            projectKeysCommit = Task {
+                                try? await Task.sleep(for: .milliseconds(300))
+                                guard !Task.isCancelled else { return }
+                                commitProjectKeys(typed)
+                            }
+                        }
                     Text(settings.projectKeys.isEmpty
                          ? "Any key shaped like \(IssueTrackerSettings.sampleKey) becomes a link. Name your projects if a diff full of UTF-8 and SHA-256 starts linking."
                          : "Only \(settings.projectKeys.sorted().joined(separator: ", ")).")
@@ -324,20 +364,27 @@ struct IntegrationsSettingsView: View {
         }
     }
 
+    private func commitAddress(_ typed: String) {
+        addressCommit?.cancel()
+        addressCommit = nil
+        guard settings.baseURL != typed else { return }
+        tracker.wrappedValue.baseURL = typed
+    }
+
     /// The set edited as a comma-separated list. A token field would be
     /// prettier, but this is a field a reviewer fills in once, from a list
     /// they already have in their head.
-    private var projectKeysText: Binding<String> {
-        Binding(
-            get: { settings.projectKeys.sorted().joined(separator: ", ") },
-            set: { text in
-                let keys = text
-                    .split(whereSeparator: { ", ;".contains($0) })
-                    .map { $0.trimmingCharacters(in: .whitespaces).uppercased() }
-                    .filter { !$0.isEmpty }
-                tracker.wrappedValue.projectKeys = Set(keys)
-            }
+    private func commitProjectKeys(_ typed: String) {
+        projectKeysCommit?.cancel()
+        projectKeysCommit = nil
+        let keys = Set(
+            typed
+                .split(whereSeparator: { ", ;".contains($0) })
+                .map { $0.trimmingCharacters(in: .whitespaces).uppercased() }
+                .filter { !$0.isEmpty }
         )
+        guard settings.projectKeys != keys else { return }
+        tracker.wrappedValue.projectKeys = keys
     }
 
     // MARK: - Shared bits
