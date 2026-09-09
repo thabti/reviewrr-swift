@@ -61,4 +61,55 @@ final class LayoutFeedbackTests: XCTestCase {
             LayoutFeedback.shouldPublish(measured: 1_200, current: 0, minimumChange: 1, requiresNonNegative: true)
         )
     }
+
+    // MARK: Text that has to fit
+
+    /// A gutter holding a glyph has to scale with the glyph.
+    ///
+    /// The sidebar's icon columns were fixed at 18pt while the symbols in
+    /// them were `.reviewrr(13, scale:)`. At Extra Large that glyph draws at
+    /// 16pt and a wide symbol — `tray.full`, `shippingbox` — is wider than
+    /// it is tall, so it was clipped by a gutter that never grew.
+    ///
+    /// The floor is 1.2, not the unscaled ratio: rounding each side to a
+    /// whole point moves the ratio by a few hundredths either way, and the
+    /// number that matters is how wide a symbol actually draws. The widest
+    /// SF Symbols are about 1.2× their point size, so a gutter at or above
+    /// that clears them at every text size.
+    func testAScaledGutterKeepsItsHeadroomOverTheGlyph() {
+        let gutter: CGFloat = 18
+        let glyph: CGFloat = 13
+
+        for size in InterfaceTextSize.allCases {
+            let ratio = Theme.scaled(gutter, size.scale) / Theme.scaled(glyph, size.scale)
+            XCTAssertGreaterThanOrEqual(
+                ratio, 1.2,
+                "\(size.label) squeezes the gutter to \(ratio)× the glyph it holds"
+            )
+        }
+    }
+
+    /// Every dimension the views scale lands on a whole point, at every
+    /// text size. A half-point text frame renders soft on a Retina display
+    /// and the app's own note on `Theme.scaled` promises this.
+    func testScaledDimensionsAreWholePoints() {
+        for size in InterfaceTextSize.allCases {
+            for base in stride(from: CGFloat(1), through: 80, by: 1) {
+                let value = Theme.scaled(base, size.scale)
+                XCTAssertEqual(value, value.rounded(), "\(base) at \(size.label) is \(value)")
+                XCTAssertGreaterThanOrEqual(value, 1, "a dimension must never scale away to nothing")
+            }
+        }
+    }
+
+    /// The settings panes share one inset and one reading width.
+    ///
+    /// Three of them used to disagree — a hand-built pane at 16, the
+    /// heading at 22, a grouped `Form` at its own 20 — so the left edge
+    /// moved as the reviewer switched panes. macOS gives no API to read a
+    /// form's inset back, so the value is pinned here instead.
+    func testSettingsSurfaceSharesOneInset() {
+        XCTAssertEqual(Theme.Settings.inset, 20, "matches a grouped Form's row inset")
+        XCTAssertGreaterThan(Theme.Settings.contentWidth, 0)
+    }
 }

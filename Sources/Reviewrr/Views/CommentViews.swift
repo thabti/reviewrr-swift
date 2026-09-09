@@ -145,18 +145,19 @@ struct CommentComposer: View {
     @ObservedObject private var workspace = WorkspaceModel.shared
     @FocusState private var focused: Bool
 
-    /// Kept on the workspace, not in this view: the composer lives inside the
-    /// diff's lazy stack, so scrolling away — or anyone marking the file
-    /// viewed — tore the view down and took the reviewer's typing with it.
-    private var text: Binding<String> {
-        let key = WorkspaceModel.composerKey(path: filename, line: line, side: side)
-        return Binding(
-            get: { workspace.composerText[key] ?? "" },
-            set: {
-                workspace.composerText[key] = $0
-                model.saveComposerDraft(path: filename, line: line, side: side, body: $0)
-            }
-        )
+    /// The text being typed, held locally so a keystroke re-renders this box
+    /// and nothing else.
+    ///
+    /// It is mirrored into the workspace on every change, which is what
+    /// keeps it: the composer lives inside the diff's lazy stack, so
+    /// scrolling away — or anyone marking the file viewed — tears this view
+    /// down, and the mirror is what `task(id:)` reads it back from. That
+    /// write publishes nothing; the durable copy is written by
+    /// `saveComposerDraft`, which coalesces its disk write.
+    @State private var text = ""
+
+    private var anchorKey: String {
+        WorkspaceModel.composerKey(path: filename, line: line, side: side)
     }
 
     /// The selection this comment will carry, when the reviewer dragged the
@@ -167,8 +168,9 @@ struct CommentComposer: View {
         let range = selectedRange
         model.addDraftComment(
             path: filename, line: range?.upperBound ?? line, side: side,
-            body: text.wrappedValue, startLine: range?.lowerBound
+            body: text, startLine: range?.lowerBound
         )
+        text = ""
         model.saveComposerDraft(path: filename, line: line, side: side, body: "")
         workspace.clearComposer(path: filename, line: line, side: side)
         workspace.clearLineSelection()
@@ -223,12 +225,12 @@ struct CommentComposer: View {
             ) {
                 AnyView(
                     ZStack(alignment: .topLeading) {
-                        TextEditor(text: text)
+                        TextEditor(text: $text)
                             .font(.callout)
                             .scrollContentBackground(.hidden)
                             .focused($focused)
                             .accessibilityLabel("Comment on \(anchorDescription)")
-                        if text.wrappedValue.isEmpty {
+                        if text.isEmpty {
                             ComposerShell<EmptyView, EmptyView>.placeholderText(
                                 "Comment on \(anchorDescription) — ⌘⏎ to add it as a draft"
                             )
@@ -254,6 +256,7 @@ struct CommentComposer: View {
                     Button("Cancel") {
                         // Cancel is the one place the text is deliberately
                         // discarded, so it is the one place that clears it.
+                        text = ""
                         model.saveComposerDraft(path: filename, line: line, side: side, body: "")
                         workspace.clearComposer(path: filename, line: line, side: side)
                         workspace.clearLineSelection()
@@ -266,7 +269,7 @@ struct CommentComposer: View {
 
                     ComposerSendButton(
                         tint: Theme.accent,
-                        isEnabled: !text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                        isEnabled: !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                         sendHelp: "Add as a draft comment (⌘⏎) — nothing reaches GitHub until you submit the review",
                         onSend: addComment
                     )
@@ -274,6 +277,18 @@ struct CommentComposer: View {
             }
         }
         .inlineDiscussionCard(accented: true)
-        .task { focused = true }
+        // Reads back whatever was typed before this row was recycled, and
+        // re-reads it if the composer is moved to another anchor.
+        .task(id: anchorKey) {
+            text = workspace.composerText(path: filename, line: line, side: side)
+            focused = true
+        }
+        .onChange(of: text) { _, typed in
+            // Mirrored immediately — a dictionary write that publishes
+            // nothing, so no amount of typing can lose the text to a scroll.
+            workspace.setComposerText(typed, path: filename, line: line, side: side)
+            // And handed to the draft, which coalesces the disk write.
+            model.saveComposerDraft(path: filename, line: line, side: side, body: typed)
+        }
     }
 }

@@ -222,7 +222,7 @@ struct AddProjectSheet: View {
                 Image(systemName: scope.isAll ? "square.grid.2x2" : (scope.isOrganization ? "building.2" : "person.crop.circle"))
                     .font(.reviewrr(12, scale: scale))
                     .foregroundStyle(selected ? Theme.accent : .secondary)
-                    .frame(width: 16)
+                    .frame(width: Theme.scaled(16, scale))
 
                 Text(scope.title)
                     .font(.reviewrr(12, scale: scale, weight: selected ? .semibold : .regular))

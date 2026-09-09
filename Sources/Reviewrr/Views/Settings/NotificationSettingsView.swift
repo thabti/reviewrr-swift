@@ -38,19 +38,14 @@ struct NotificationSettingsView: View {
     private var current: NotificationPreferences { model.settings.notifications }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Theme.Space.l) {
-                heroCard
-                if current.enabled {
-                    presetPicker
-                    quietHoursCard
-                    advancedDisclosure
-                }
+        SettingsPage {
+            heroCard
+            if current.enabled {
+                presetPicker
+                quietHoursCard
+                advancedDisclosure
             }
-            .padding(Theme.Space.l)
-            .frame(maxWidth: 640, alignment: .leading)
         }
-        .frame(maxWidth: .infinity)
         .task { await model.notifications.refreshPermission() }
     }
 
@@ -98,7 +93,7 @@ struct NotificationSettingsView: View {
                         .help(help(for: trigger))
                     }
                 }
-                .padding(.leading, 18)
+                .padding(.leading, Theme.Space.l)
                 .disabled(!model.settings.notifications.notifyOnUpdate)
             }
         } header: {

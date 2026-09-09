@@ -7,6 +7,16 @@ struct InboxFilterBar: View {
     var searchFocused: FocusState<Bool>.Binding
     @Environment(\.reviewrrTextScale) private var scale
 
+    /// What is in the field, before it reaches the model.
+    ///
+    /// Committing every character re-filtered, re-sorted and re-grouped the
+    /// whole inbox — twice, because the model's `searchText` and the
+    /// `filter` it feeds are both published — between pressing a key and
+    /// seeing the letter. The workspace's own file filter has worked this
+    /// way for the same reason; this is that pattern.
+    @State private var searchDraft = ""
+    @State private var searchDebounce: Task<Void, Never>?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
@@ -68,6 +78,15 @@ struct InboxFilterBar: View {
         }
     }
 
+    /// Clears both halves at once. The debounce would get there eventually,
+    /// but a Clear button that takes 180ms to visibly do anything reads as a
+    /// button that did not work.
+    private func clearSearch() {
+        searchDebounce?.cancel()
+        searchDraft = ""
+        model.searchText = ""
+    }
+
     private var scopeTitle: String {
         model.projects.first(where: { $0.key == model.selectedProjectKey })?.repo ?? "All Projects"
     }
@@ -81,20 +100,20 @@ struct InboxFilterBar: View {
                 .font(.reviewrr(13, scale: scale))
                 .foregroundStyle(searchFocused.wrappedValue ? Theme.accent : .secondary)
 
-            TextField("Search title, number, author, branch, label…", text: $model.searchText)
+            TextField("Search title, number, author, branch, label…", text: $searchDraft)
                 .textFieldStyle(.plain)
                 .font(.reviewrr(14, scale: scale))
                 .focused(searchFocused)
                 .accessibilityLabel("Search pull requests")
                 .onKeyPress(.escape) {
-                    model.searchText = ""
+                    clearSearch()
                     searchFocused.wrappedValue = false
                     return .handled
                 }
 
-            if !model.searchText.isEmpty {
+            if !searchDraft.isEmpty {
                 Button {
-                    model.searchText = ""
+                    clearSearch()
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.reviewrr(12, scale: scale))
@@ -113,6 +132,23 @@ struct InboxFilterBar: View {
                     .help("Press ⌘F to search")
                     .accessibilityHidden(true)
             }
+        }
+        .onAppear { searchDraft = model.searchText }
+        // Long enough to swallow a typing burst, short enough that the inbox
+        // still feels like it is answering the keystroke — the same 180ms
+        // the workspace's file filter uses.
+        .onChange(of: searchDraft) { _, typed in
+            searchDebounce?.cancel()
+            searchDebounce = Task {
+                try? await Task.sleep(for: .milliseconds(180))
+                guard !Task.isCancelled else { return }
+                model.searchText = typed
+            }
+        }
+        // Anything that clears or sets the search elsewhere — the command
+        // palette, "Clear filters" — has to reach the field.
+        .onChange(of: model.searchText) { _, value in
+            if value != searchDraft { searchDraft = value }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -315,7 +351,9 @@ private struct ActivityButton: View {
                                             .accessibilityLabel("Notified")
                                     }
                                 }
-                                Text("\(event.projectName) · #\(event.pr.number) \(event.pr.title)")
+                                // `verbatim`: interpolated into a
+                                // `LocalizedStringKey`, #8045 renders #8,045.
+                                Text(verbatim: "\(event.projectName) · #\(event.pr.number) \(event.pr.title)")
                                     .font(.system(size: 11))
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)

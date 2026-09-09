@@ -243,7 +243,7 @@ private struct FileLeafRow: View, Equatable {
             if badge.total > 0 {
                 HStack(spacing: 2) {
                     Image(systemName: "bubble.left.fill")
-                    Text("\(badge.total)")
+                    Text(verbatim: "\(badge.total)")
                 }
                 .font(Theme.caption)
                 .foregroundStyle(.secondary)

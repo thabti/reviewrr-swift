@@ -494,7 +494,27 @@ final class WorkspaceModel: ObservableObject {
     /// Session-scoped on purpose: a *submitted* draft is durable through
     /// `DraftStore`, and an abandoned half-sentence should not outlive the
     /// window it was typed in.
-    @Published var composerText: [String: String] = [:]
+    ///
+    /// Deliberately **not** `@Published`. Nothing renders it — the composer
+    /// that owns the text holds it in `@State` while it is on screen and
+    /// writes through here — and every view in the workspace observes this
+    /// model, so publishing a keystroke re-rendered the diff pane, the file
+    /// tree, the toolbar and the filter bar for a character only one text
+    /// box could see.
+    private(set) var composerText: [String: String] = [:]
+
+    func composerText(path: String, line: Int, side: DiffSide) -> String {
+        composerText[Self.composerKey(path: path, line: line, side: side)] ?? ""
+    }
+
+    func setComposerText(_ body: String, path: String, line: Int, side: DiffSide) {
+        composerText[Self.composerKey(path: path, line: line, side: side)] = body
+    }
+
+    /// Drops every half-written comment — a different pull request opening.
+    func clearAllComposerText() {
+        composerText.removeAll()
+    }
 
     static func composerKey(path: String, line: Int, side: DiffSide) -> String {
         "\(path)#\(line)#\(side.rawValue)"
@@ -744,7 +764,7 @@ final class WorkspaceModel: ObservableObject {
         collapsedDirectories = []
         scrollAnchors.removeAll()
         collapsedHunks = []
-        composerText = [:]
+        composerText.removeAll()
         lastRefreshInputs = nil
         formattingScanTask?.cancel()
         resetDerivationCaches()

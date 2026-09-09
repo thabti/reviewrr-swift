@@ -157,7 +157,9 @@ struct SettingsScreen: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 22)
+        // The same inset the panes use, so the title sits directly above
+        // the first row rather than 6pt out from it.
+        .padding(.horizontal, Theme.Settings.inset)
         .padding(.top, 20)
         .padding(.bottom, 12)
         .accessibilityElement(children: .combine)

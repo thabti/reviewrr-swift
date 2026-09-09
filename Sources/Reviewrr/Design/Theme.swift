@@ -196,6 +196,21 @@ enum Theme {
         static let xl: CGFloat = 24
     }
 
+    /// The settings surface's own metrics.
+    ///
+    /// A grouped `Form` on macOS insets its rows by 20pt and there is no API
+    /// to read that back, so the panes that are not forms — the ones built
+    /// from hero cards and preset grids — have to match it by hand or the
+    /// left edge jumps as the reviewer moves between panes. Same for the
+    /// reading width: a settings pane is a column of prose and controls, not
+    /// a canvas, and every pane should agree on how wide that column is.
+    enum Settings {
+        /// The inset from the pane's leading edge. Matches a grouped `Form`.
+        static let inset: CGFloat = 20
+        /// The reading width a pane's content is held to.
+        static let contentWidth: CGFloat = 640
+    }
+
     /// Both panels' header bars are exactly this tall, so the left sidebar's
     /// summary and the right rail's identity line up across the window
     /// instead of missing each other by a couple of points.

@@ -474,6 +474,7 @@ struct AccountSettingsView: View {
             Text("Answers \"can this token see this repository\" directly, without opening it in the review workspace.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

@@ -208,11 +208,22 @@ final class AppModel: ObservableObject {
         didSet {
             guard !isRestoringDraft else { return }
             if draft.isSubmitted == true { draft.isSubmitted = false }
-            persistDraft()
+            scheduleDraftSave()
         }
     }
     @Published private(set) var draftSaveError: String?
     private var isRestoringDraft = false
+    /// Pending debounced save. See `scheduleDraftSave`.
+    private var draftSaveTask: Task<Void, Never>?
+    private var lifecycleObservers: [NSObjectProtocol] = []
+    /// Half-written inline comments, by composer anchor.
+    ///
+    /// Held here rather than inside the `@Published` draft: nothing renders
+    /// it — the dashboard's shelf counts the copy on disk — and routing a
+    /// keystroke through `draft` republished `AppModel`, which re-renders
+    /// every surface in the window. `persistDraft` folds it back in, so what
+    /// reaches disk is unchanged.
+    private var pendingComposerComments: [String: DraftComment] = [:]
     private var draftHost: ForgeHost = .dotCom
     private var isDemoReview = false
     @Published var isSubmittingReview = false
@@ -282,6 +293,29 @@ final class AppModel: ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] counts in self?.workspace.unresolvedCountsByPath = counts }
             .store(in: &cancellables)
+
+        // The draft save is debounced, so the two moments when the window
+        // may be about to stop existing are the two that have to flush it.
+        // Synchronously, not through a `Task`: at `willTerminate` there is
+        // no next run loop iteration to hand work to.
+        for name in [NSApplication.willTerminateNotification, NSApplication.willResignActiveNotification] {
+            lifecycleObservers.append(
+                NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.flushPendingDraftSave() }
+                }
+            )
+        }
+    }
+
+    deinit {
+        for observer in lifecycleObservers { NotificationCenter.default.removeObserver(observer) }
+    }
+
+    /// Writes the draft now if a debounced save is waiting. Cheap when none
+    /// is, which is most of the time.
+    private func flushPendingDraftSave() {
+        guard draftSaveTask != nil else { return }
+        persistDraft()
     }
 
     /// The handle feature models (dashboard, auth, conversation, AI) use to
@@ -926,11 +960,16 @@ final class AppModel: ObservableObject {
             self.draftHost = settings.githubHost
             self.draft = DraftStore.load(for: reference, host: draftHost)
             self.draft.isDiscarded = nil
+            // The pending text lives outside `draft` while the window is
+            // open; without this, the next save would write an empty store
+            // over what was restored.
+            self.pendingComposerComments = self.draft.pendingComments ?? [:]
             // Unfinished composer text returns as editable, unsent inline drafts.
             if previousReference != reference {
                 self.draft.comments.append(contentsOf: (self.draft.pendingComments ?? [:]).values.filter { !$0.body.isEmpty })
                 self.draft.pendingComments = nil
-                workspace.composerText = [:]
+                self.pendingComposerComments = [:]
+                workspace.clearAllComposerText()
             }
             reconcileDraftHeadSha(loadedPR.headSha)
 
@@ -1021,10 +1060,37 @@ final class AppModel: ObservableObject {
 
     func retryDraftSave() { persistDraft() }
 
+    /// Saves after typing stops, rather than on every character.
+    ///
+    /// `draft.didSet` used to call `persistDraft` directly, so one keystroke
+    /// in an inline comment JSON-encoded the whole review, wrote it to disk
+    /// atomically, and then re-listed and re-decoded every saved draft in
+    /// the support directory to refresh the dashboard shelf. On a review
+    /// with real comments in it that is several milliseconds of synchronous
+    /// file I/O between pressing a key and seeing the letter.
+    ///
+    /// Nothing is risked by waiting: every path that must not lose work —
+    /// closing the pull request, submitting, opening another one, the app
+    /// quitting — calls `persistDraft()` directly, and that cancels this.
+    private func scheduleDraftSave() {
+        draftSaveTask?.cancel()
+        draftSaveTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled else { return }
+            _ = self?.persistDraft()
+        }
+    }
+
+    /// Writes the draft now, cancelling any debounced save. Returns whether
+    /// it reached disk, which is what the callers that must not lose work
+    /// check before moving on.
     @discardableResult
     private func persistDraft() -> Bool {
+        draftSaveTask?.cancel()
+        draftSaveTask = nil
         guard !isDemoReview, let reference, let pullRequest else { return true }
         var saved = draft
+        saved.pendingComments = pendingComposerComments.isEmpty ? nil : pendingComposerComments
         saved.referenceKey = reference.key
         saved.title = pullRequest.title
         saved.savedAt = Date()
@@ -1044,15 +1110,15 @@ final class AppModel: ObservableObject {
     func saveComposerDraft(path: String, line: Int, side: DiffSide, body: String) {
         guard let headSha = pullRequest?.headSha else { return }
         let key = WorkspaceModel.composerKey(path: path, line: line, side: side)
-        var pending = draft.pendingComments ?? [:]
         if body.isEmpty {
-            pending.removeValue(forKey: key)
+            pendingComposerComments.removeValue(forKey: key)
         } else {
-            var comment = pending[key] ?? DraftComment(path: path, line: line, side: side, body: body, headSha: headSha)
+            var comment = pendingComposerComments[key]
+                ?? DraftComment(path: path, line: line, side: side, body: body, headSha: headSha)
             comment.body = body
-            pending[key] = comment
+            pendingComposerComments[key] = comment
         }
-        draft.pendingComments = pending
+        scheduleDraftSave()
     }
 
     /// `startLine` is the first line of a multi-line comment — the range a
@@ -1109,7 +1175,7 @@ final class AppModel: ObservableObject {
             workspace.closeComposer()
             draft.summary = ""
             draft.event = .comment
-            draft.isSubmitted = (draft.pendingComments ?? [:]).isEmpty
+            draft.isSubmitted = pendingComposerComments.isEmpty
             isRestoringDraft = false
             persistDraft()
             dashboard.markReviewed(reference, headSha: pullRequest?.headSha)

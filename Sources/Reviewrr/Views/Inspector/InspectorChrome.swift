@@ -267,7 +267,7 @@ struct InspectorTabBar<Value: Hashable>: View {
                 Text(tab.title)
                     .font(.system(size: 11.5, weight: isSelected ? .semibold : .regular))
                 if let badge = tab.badge, badge > 0 {
-                    Text("\(badge)")
+                    Text(verbatim: "\(badge)")
                         .font(.system(size: 9, weight: .semibold))
                         .padding(.horizontal, 4)
                         .padding(.vertical, 1)

@@ -47,7 +47,7 @@ struct ReviewProgressFooter: View {
                 // The count ticking is the app's main sense of forward
                 // momentum through a review — worth a numeric roll
                 // rather than a plain re-render.
-                Text("\(progress.overallViewed)/\(progress.overallTotal)")
+                Text(verbatim: "\(progress.overallViewed)/\(progress.overallTotal)")
                     .font(Theme.monoFontSmall)
                     .foregroundStyle(.secondary)
                     .contentTransition(.numericText())

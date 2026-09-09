@@ -35,21 +35,16 @@ struct IntegrationsSettingsView: View {
     private var hasAddress: Bool { !settings.baseURL.trimmingCharacters(in: .whitespaces).isEmpty }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Theme.Space.l) {
-                connectionCard
-                if settings.isEnabled {
-                    addressField
-                    previewCard
-                    whereItAppears
-                    advanced
-                }
-                privacyNote
+        SettingsPage {
+            connectionCard
+            if settings.isEnabled {
+                addressField
+                previewCard
+                whereItAppears
+                advanced
             }
-            .padding(Theme.Space.l)
-            .frame(maxWidth: 560, alignment: .leading)
+            privacyNote
         }
-        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Connection

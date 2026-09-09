@@ -88,7 +88,6 @@ struct ProjectSidebarView: View {
             .accessibilityLabel("Refresh all watched projects")
         }
         .padding(14)
-
         .overlay(alignment: .bottom) { Divider() }
     }
 
@@ -267,7 +266,9 @@ struct ProjectSidebarView: View {
             Image(systemName: "tray.full")
                 .font(.reviewrr(13, scale: scale))
                 .foregroundStyle(Theme.accent)
-                .frame(width: 18)
+                // Scaled with the glyph it holds. A fixed gutter clipped the
+                // widest symbols once interface text grew.
+                .frame(width: Theme.scaled(18, scale))
 
             Text("All Projects")
                 .font(.reviewrr(13, scale: scale, weight: .semibold))
@@ -444,7 +445,7 @@ private struct ProjectRowView: View {
                 Image(systemName: "shippingbox")
                     .font(.reviewrr(13, scale: scale))
                     .foregroundStyle(project.isMuted ? .secondary : Theme.accent)
-                    .frame(width: 18)
+                    .frame(width: Theme.scaled(18, scale))
 
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 4) {

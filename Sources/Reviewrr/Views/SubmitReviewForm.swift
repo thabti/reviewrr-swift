@@ -61,9 +61,27 @@ struct SubmitReviewForm: View {
     @FocusState private var summaryFocused: Bool
     @State private var showsComments = false
 
+    /// The summary being typed, before it reaches the draft.
+    ///
+    /// `$model.draft.summary` bound straight to the editor meant every
+    /// character republished `AppModel` — which re-rendered the whole
+    /// window, diff pane included, behind this popover — and marked the
+    /// draft dirty, which used to write it to disk. The commit is debounced,
+    /// and forced before anything that reads the draft back.
+    @State private var summary = ""
+    @State private var summaryCommit: Task<Void, Never>?
+
     private var disabledReason: String? {
-        guard model.draft.summary.isEmpty && model.draft.comments.isEmpty else { return nil }
+        guard summary.isEmpty && model.draft.comments.isEmpty else { return nil }
         return "Add a summary or an inline comment first."
+    }
+
+    /// Pushes the typed summary into the draft now. Called before submitting
+    /// and when the form goes away, so no path can read a stale draft.
+    private func commitSummary() {
+        summaryCommit?.cancel()
+        summaryCommit = nil
+        if model.draft.summary != summary { model.draft.summary = summary }
     }
 
     private var pendingCount: Int { model.draft.comments.count }
@@ -89,10 +107,15 @@ struct SubmitReviewForm: View {
         }
         .frame(width: 460)
         .task {
+            // Whatever was typed before the form was last dismissed.
+            summary = model.draft.summary
             // Focus the summary on open: the reviewer pressed a button
             // labelled "Submit review" and the next thing they do is type.
             summaryFocused = true
         }
+        // Dismissing without submitting must not discard the summary, so the
+        // debounce is flushed rather than cancelled on the way out.
+        .onDisappear { commitSummary() }
     }
 
     // MARK: - Header
@@ -182,7 +205,7 @@ struct SubmitReviewForm: View {
             }
 
             ZStack(alignment: .topLeading) {
-                TextEditor(text: $model.draft.summary)
+                TextEditor(text: $summary)
                     .font(.callout)
                     .focused($summaryFocused)
                     .scrollContentBackground(.hidden)
@@ -194,7 +217,7 @@ struct SubmitReviewForm: View {
                     // rather than as a field waiting for text.
                     .frame(height: 110)
 
-                if model.draft.summary.isEmpty {
+                if summary.isEmpty {
                     Text("What should the author know? Markdown is supported.")
                         .font(.callout)
                         .foregroundStyle(.tertiary)
@@ -208,6 +231,14 @@ struct SubmitReviewForm: View {
                 RoundedRectangle(cornerRadius: Theme.cornerRadiusSmall)
                     .strokeBorder(summaryFocused ? Theme.accent.opacity(0.6) : Theme.hairline)
             )
+            .onChange(of: summary) { _, _ in
+                summaryCommit?.cancel()
+                summaryCommit = Task {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    guard !Task.isCancelled else { return }
+                    commitSummary()
+                }
+            }
         }
     }
 
@@ -314,9 +345,19 @@ struct SubmitReviewForm: View {
                 .accessibilityLabel("Keep the draft and close")
 
             Button {
+                // The debounce must not be in flight when the review is
+                // built: a summary typed and submitted inside 250ms would
+                // otherwise go to GitHub without it.
+                commitSummary()
                 Task {
                     await model.submitReview()
-                    if model.submitError == nil { isPresented = false }
+                    guard model.submitError == nil else { return }
+                    // Submitting empties the draft's summary. Without
+                    // clearing the local copy too, `onDisappear` would
+                    // commit it straight back and the review just sent
+                    // would reappear as an unsent draft.
+                    summary = ""
+                    isPresented = false
                 }
             } label: {
                 if model.isSubmittingReview {

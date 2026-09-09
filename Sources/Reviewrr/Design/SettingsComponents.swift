@@ -159,6 +159,7 @@ struct PresetCard: View {
                     Text(hint)
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .multilineTextAlignment(.leading)
@@ -330,7 +331,7 @@ struct AdvancedGroup<Content: View>: View {
 /// The scroll container every pane uses, so they share a width, a rhythm
 /// and a maximum measure.
 struct SettingsPage<Content: View>: View {
-    var maxWidth: CGFloat = 620
+    var maxWidth: CGFloat = Theme.Settings.contentWidth
     @ViewBuilder var content: () -> Content
 
     var body: some View {
@@ -338,7 +339,7 @@ struct SettingsPage<Content: View>: View {
             VStack(alignment: .leading, spacing: Theme.Space.l) {
                 content()
             }
-            .padding(Theme.Space.l)
+            .padding(Theme.Settings.inset)
             .frame(maxWidth: maxWidth, alignment: .leading)
         }
         .frame(maxWidth: .infinity)

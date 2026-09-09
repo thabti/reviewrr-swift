@@ -827,12 +827,17 @@ final class WorkspaceModelTests: XCTestCase {
     /// inside the diff's lazy stack, so scrolling away destroyed it.
     func testComposerTextSurvivesOnTheModelAndClearsExplicitly() {
         let model = WorkspaceModel()
-        let key = WorkspaceModel.composerKey(path: "a.swift", line: 12, side: .right)
-        model.composerText[key] = "half a thought"
+        model.setComposerText("half a thought", path: "a.swift", line: 12, side: .right)
+        model.setComposerText("and another", path: "b.swift", line: 3, side: .left)
 
-        XCTAssertEqual(model.composerText[key], "half a thought")
+        XCTAssertEqual(model.composerText(path: "a.swift", line: 12, side: .right), "half a thought")
         model.clearComposer(path: "a.swift", line: 12, side: .right)
-        XCTAssertNil(model.composerText[key])
+        XCTAssertEqual(model.composerText(path: "a.swift", line: 12, side: .right), "")
+        XCTAssertEqual(model.composerText(path: "b.swift", line: 3, side: .left), "and another")
+
+        // A different pull request opening drops every half-written comment.
+        model.clearAllComposerText()
+        XCTAssertEqual(model.composerText(path: "b.swift", line: 3, side: .left), "")
     }
 
     // MARK: Visible file set
@@ -1064,5 +1069,32 @@ final class PRLoadStageTests: XCTestCase {
         XCTAssertEqual(PRLoadStage.pullRequest.label(for: .github), "Pull request")
         XCTAssertEqual(PRLoadStage.reviews.label(for: .github), "Reviews")
         XCTAssertEqual(PRLoadStage.threads.label(for: .github), "Review threads")
+    }
+}
+
+/// What a keystroke in an inline comment costs the rest of the window.
+@MainActor
+final class ComposerPublishingTests: XCTestCase {
+    /// Half-written comment text is read by exactly one view — the box it is
+    /// being typed into. Every other view in the workspace observes this
+    /// model, so publishing each character re-rendered the diff pane, the
+    /// file tree, the toolbar and the filter bar for a change none of them
+    /// could see.
+    func testTypingAnInlineCommentRepublishesNothing() {
+        let workspace = WorkspaceModel()
+        var publishes = 0
+        let subscription = workspace.objectWillChange.sink { _ in publishes += 1 }
+        defer { subscription.cancel() }
+
+        for index in 0..<200 {
+            workspace.setComposerText("a draft comment \(index)", path: "src/App.tsx", line: 42, side: .right)
+        }
+
+        XCTAssertEqual(publishes, 0, "typing must not re-render the workspace")
+        XCTAssertEqual(
+            workspace.composerText(path: "src/App.tsx", line: 42, side: .right),
+            "a draft comment 199",
+            "and the text must still be there when the row is recycled"
+        )
     }
 }

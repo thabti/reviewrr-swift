@@ -245,7 +245,10 @@ struct AnalysisTabView: View {
             AISectionHeader(title: "Review order")
             ForEach(items.sorted { $0.priority < $1.priority }) { item in
                 HStack(alignment: .top, spacing: 8) {
-                    Text("\(item.priority)").font(Theme.monoFontSmall).foregroundStyle(.secondary).frame(width: 18, alignment: .trailing)
+                    Text(verbatim: "\(item.priority)")
+                        .font(Theme.monoFontSmall)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18, alignment: .trailing)
                     VStack(alignment: .leading, spacing: 2) {
                         pathButton(item.path) { onNavigate(item.path, 1) }
                         Text(item.reason).font(.caption2).foregroundStyle(.secondary)
