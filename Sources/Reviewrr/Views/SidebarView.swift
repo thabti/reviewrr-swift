@@ -50,13 +50,7 @@ struct SidebarView: View {
         // updated" instead of a hard cut.
         .motion(Motion.smooth, value: workspace.tree)
         .safeAreaInset(edge: .top, spacing: 0) { header(pr: pr) }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            // Same treatment as the header at the other end of the column:
-            // bar material, one hairline on the edge that meets the list.
-            ReviewProgressFooter(progress: progress)
-                .background(Theme.barMaterial)
-                .overlay(alignment: .top) { Divider() }
-        }
+        .safeAreaInset(edge: .bottom, spacing: 0) { filterFooter }
         .task(id: model.reference?.key) {
             guard let reference = model.reference else { return }
             workspace.configureIfNeeded(prKey: reference.key, hiddenFileCategories: model.settings.hiddenFileCategories)
@@ -91,15 +85,30 @@ struct SidebarView: View {
         VStack(spacing: 0) {
             if let reference = model.reference {
                 PRSummaryCard(pr: pr, reference: reference)
-                Divider()
             }
-            FilterBarView(workspace: workspace, onHiddenCategoriesChanged: persistHiddenCategories)
-                .padding(.horizontal, Theme.Space.m)
-                .padding(.vertical, Theme.Space.s)
         }
         .frame(maxWidth: .infinity)
         .background(Theme.barMaterial)
         .overlay(alignment: .bottom) { Divider() }
+    }
+
+    /// Filtering lives under the tree, not over it.
+    ///
+    /// It sat above, between the pull request's summary and the files —
+    /// which put three rows of controls, chips and a "4 files hidden" line
+    /// between a reviewer and the thing they came to the column for. The
+    /// list is the content; the controls that narrow it belong at the edge,
+    /// next to the progress that summarises it.
+    private var filterFooter: some View {
+        VStack(spacing: 0) {
+            FilterBarView(workspace: workspace, onHiddenCategoriesChanged: persistHiddenCategories)
+                .padding(.horizontal, Theme.Space.m)
+                .padding(.vertical, Theme.Space.s)
+            ReviewProgressFooter(progress: progress)
+        }
+        .frame(maxWidth: .infinity)
+        .background(Theme.barMaterial)
+        .overlay(alignment: .top) { Divider() }
     }
 
     /// The tree's own section header carries the "you are not seeing all of

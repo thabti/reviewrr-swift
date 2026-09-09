@@ -1,10 +1,20 @@
 import SwiftUI
 
-/// The app's home screen: watched projects on the left, the combined
-/// cross-repository PR inbox on the right. Self-contained two-pane layout
-/// (rather than nesting another `NavigationSplitView`) so it renders the
-/// same whether the integrator hosts it as `RootView`'s detail content or
-/// anywhere else.
+/// The app's home screen: watched projects in the sidebar, the combined
+/// cross-repository PR inbox as the detail.
+///
+/// A real `NavigationSplitView`, which is what makes it behave like a Mac
+/// app rather than an approximation of one. It replaces a hand-rolled
+/// `HStack` with a drag handle, an `@AppStorage` width and an
+/// `@AppStorage` collapsed flag — all of which macOS already does, and does
+/// better: the system's own drag-to-resize with its snap behaviour, the
+/// standard sidebar toggle in the toolbar with its ⌃⌘S binding, the
+/// full-height vibrant sidebar material, and a remembered width per window
+/// rather than per app.
+///
+/// Losing the custom toggle button is part of the point. There were two —
+/// one in the inbox's filter bar and one in its toolbar — and neither was
+/// the one a Mac user reaches for.
 struct DashboardView: View {
     @ObservedObject var model: DashboardModel
     /// The host travels with the reference: the inbox mixes rows from
@@ -14,13 +24,10 @@ struct DashboardView: View {
 
     @State private var selectedRowID: String?
     @FocusState private var searchFocused: Bool
-    /// Sidebar width is the reviewer's call — repository names vary wildly in
-    /// length — so it is draggable and remembered.
-    @AppStorage("reviewrr.dashboard.sidebarWidth") private var sidebarWidth: Double = 280
-    @AppStorage("reviewrr.dashboard.sidebarCollapsed") private var sidebarCollapsed = false
-
-    private static let minSidebarWidth: Double = 200
-    private static let maxSidebarWidth: Double = 460
+    /// Starts with both columns shown. macOS remembers what the reviewer
+    /// does with it from there, per window, as it does for every other
+    /// split view on the system.
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     init(model: DashboardModel, onOpenPR: @escaping (PRReference, ForgeHost) -> Void) {
         self.model = model
@@ -28,24 +35,20 @@ struct DashboardView: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            if !sidebarCollapsed {
-                ProjectSidebarView(model: model, showAddProject: $model.isAddProjectPresented)
-                    .frame(width: sidebarWidth)
-                    .motionTransition(.move(edge: .leading).combined(with: .opacity))
-
-                resizeHandle
-            }
-
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            ProjectSidebarView(model: model, showAddProject: $model.isAddProjectPresented)
+                // A range, not a fixed width: the system's drag handle needs
+                // room to work, and repository names vary wildly in length.
+                .navigationSplitViewColumnWidth(min: 200, ideal: 280, max: 460)
+        } detail: {
             InboxPanelView(
                 model: model, selectedRowID: $selectedRowID, searchFocused: $searchFocused,
                 showAddProject: $model.isAddProjectPresented,
-                sidebarCollapsed: $sidebarCollapsed,
                 onSelectRow: openRow, onResumeDraft: { onOpenPR($0, model.host) }
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .motion(Motion.surface, value: sidebarCollapsed)
+        .navigationSplitViewStyle(.balanced)
         .environment(\.reviewrrTextScale, model.textScale)
         .sheet(isPresented: $model.isAddProjectPresented) {
             AddProjectSheet(model: model)
@@ -64,31 +67,6 @@ struct DashboardView: View {
 
     /// A one-pixel divider is a two-pixel target, so the draggable area is
     /// widened invisibly and the cursor changes to say it can be dragged.
-    private var resizeHandle: some View {
-        Divider()
-            .overlay(alignment: .center) {
-                Rectangle()
-                    .fill(.clear)
-                    .frame(width: 8)
-                    .contentShape(Rectangle())
-                    .onHover { inside in
-                        if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
-                    }
-                    .gesture(
-                        DragGesture(coordinateSpace: .global)
-                            .onChanged { value in
-                                sidebarWidth = min(
-                                    max(sidebarWidth + value.translation.width - dragAccumulator, Self.minSidebarWidth),
-                                    Self.maxSidebarWidth
-                                )
-                                dragAccumulator = value.translation.width
-                            }
-                            .onEnded { _ in dragAccumulator = 0 }
-                    )
-                    .accessibilityLabel("Resize sidebar")
-            }
-    }
-
     // Drag translation is cumulative from the gesture's start, so the last
     // reported value is subtracted to turn it into a per-frame delta.
     @State private var dragAccumulator: CGFloat = 0

@@ -230,6 +230,52 @@ final class PerformanceTests: XCTestCase {
 
     // MARK: - Inbox at scale
 
+    // MARK: - Typing
+
+    /// One keystroke in the AI composer while the `@` picker is open, on a
+    /// pull request the size this app is used on.
+    ///
+    /// The composer's `body` reads `matches` for the empty check, again for
+    /// the row list, again for the height, and `paths` for the count — so
+    /// whatever one lookup costs, a keystroke pays it four or five times.
+    /// This measures the whole pass, because that is what the reviewer
+    /// waits for between pressing a key and seeing the letter.
+    @MainActor
+    func testAskComposerKeystrokeWithPickerOpenPerformance() {
+        let composer = AIAskComposerModel()
+        composer.files = Self.workspaceFiles(675)
+        measure {
+            for index in 0..<50 {
+                let text = "why does @Component\(index % 10)"
+                composer.update(text: text, selection: NSRange(location: text.utf16.count, length: 0))
+                _ = composer.matches.isEmpty
+                _ = composer.matches.count
+                _ = composer.matches
+                _ = composer.paths.count
+            }
+        }
+    }
+
+    /// The same keystroke with no `@` in play — the ordinary case, where the
+    /// picker is closed and the composer should be doing nothing but
+    /// republishing the text.
+    @MainActor
+    func testAskComposerPlainKeystrokePerformance() {
+        let composer = AIAskComposerModel()
+        composer.files = Self.workspaceFiles(675)
+        composer.taggedPaths = Array(composer.paths.prefix(5))
+        measure {
+            for index in 0..<200 {
+                let text = String(repeating: "a", count: index % 40) + " question"
+                composer.update(text: text, selection: NSRange(location: text.utf16.count, length: 0))
+                _ = composer.mentionRange
+                // What `canSend` costs: every tagged path checked against
+                // the file list, on every body evaluation.
+                _ = composer.taggedPaths.allSatisfy { composer.paths.contains($0) }
+            }
+        }
+    }
+
     func testInboxFilterSortGroupPerformance() {
         let rows = inboxRows(2_000)
         var filter = InboxFilter()

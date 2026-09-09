@@ -55,7 +55,12 @@ struct ProjectSidebarView: View {
                 footer
             }
         }
-        .background(Theme.columnSurface)
+        // No background of its own: inside a real `NavigationSplitView`
+        // sidebar, macOS paints the vibrant sidebar material behind the
+        // whole column — so header, list and footer share one surface by
+        // construction. Painting `columnSurface` over it, as this did while
+        // the dashboard was a hand-rolled `HStack`, threw the vibrancy away
+        // to fix a mismatch the native sidebar does not have.
         .background(alignment: .topLeading) { focusShortcut }
     }
 
@@ -83,7 +88,7 @@ struct ProjectSidebarView: View {
             .accessibilityLabel("Refresh all watched projects")
         }
         .padding(14)
-        .background(Theme.columnSurface)
+
         .overlay(alignment: .bottom) { Divider() }
     }
 
@@ -97,7 +102,7 @@ struct ProjectSidebarView: View {
             addProjectButton
         }
         .padding(12)
-        .background(Theme.columnSurface)
+
     }
 
     private var syncSummary: String {

@@ -219,6 +219,12 @@ struct DiffContainerView: View {
         .focusEffectDisabled(false)
         .focused($containerFocused)
         .onKeyPress(characters: CharacterSet(charactersIn: "jknpvu/?")) { press in
+            // Every one of these is an unmodified letter, so each one is also
+            // a character somebody might be trying to type. Asking a question
+            // in the AI rail and reaching `?` opened the shortcuts sheet over
+            // the half-written question; `u` in a comment draft flipped the
+            // whole pane between split and unified.
+            guard !Self.isTypingInTextControl else { return .ignored }
             // `?` is shift-slash on every layout the app supports, so
             // requiring an empty modifier set meant the one key that opens
             // the shortcuts sheet was the one key the sheet's own list
@@ -403,6 +409,22 @@ struct DiffContainerView: View {
                 flashIntensity = 0
             }
         }
+    }
+
+    /// Whether the keyboard currently belongs to something being typed into.
+    ///
+    /// SwiftUI focus and AppKit's first responder are two different things,
+    /// and this pane holds SwiftUI focus for as long as it is on screen — so
+    /// `onKeyPress` still fires while the caret is in the AI composer, a
+    /// comment draft or the file filter. The responder is what actually
+    /// decides who a keystroke was meant for, so it is what this asks.
+    ///
+    /// A SwiftUI `TextField` answers as its field editor, which is an
+    /// `NSTextView`, so both cases are the same check.
+    private static var isTypingInTextControl: Bool {
+        guard let responder = NSApp.keyWindow?.firstResponder else { return false }
+        if let text = responder as? NSText { return text.isEditable }
+        return responder is NSTextField
     }
 
     private func handle(key: String) {

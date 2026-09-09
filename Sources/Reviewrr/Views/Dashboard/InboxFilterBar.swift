@@ -5,19 +5,11 @@ import SwiftUI
 struct InboxFilterBar: View {
     @ObservedObject var model: DashboardModel
     var searchFocused: FocusState<Bool>.Binding
-    @Binding var sidebarCollapsed: Bool
     @Environment(\.reviewrrTextScale) private var scale
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
-                Button { sidebarCollapsed.toggle() } label: {
-                    Image(systemName: "sidebar.leading")
-                }
-                .buttonStyle(.borderless)
-                .keyboardShortcut("s", modifiers: [.command, .control])
-                .help(sidebarCollapsed ? "Show projects" : "Hide projects")
-                .accessibilityLabel("Toggle project sidebar")
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(scopeTitle)

@@ -124,12 +124,13 @@ final class AIModel: ObservableObject {
 
     func configure(reference: PRReference, pullRequest: PullRequest, files: [PRFile]) {
         if self.reference != reference { askComposer.reset() }
-        askComposer.paths = files.map(\.filename)
+        askComposer.files = files
         cancel()
         self.reference = reference
         self.pullRequest = pullRequest
         self.files = files
         askError = nil
+        refreshReadyProviders()
         starterQuestions = Prompts.starterQuestions(pullRequest: pullRequest, files: files)
         analysisState = .idle
         carriedOverFromHeadSha = nil
@@ -374,6 +375,55 @@ final class AIModel: ObservableObject {
         persistSelection()
     }
 
+    /// Switches provider and model together.
+    ///
+    /// One call rather than two because they are one choice: picking
+    /// "Claude Sonnet 5" while Codex is selected has to move the provider
+    /// too, and doing it in two steps leaves a frame — and a persisted
+    /// settings blob — where Codex is asked for a model it has never heard
+    /// of. Choosing the provider's own default is spelled as an empty model,
+    /// which is what `resolvedModel` already means by it.
+    func selectProviderModel(providerID id: String, modelID model: String) {
+        providerID = id
+        modelID = model
+        persistSelection()
+    }
+
+    /// Providers that could answer right now: a key in the Keychain, a base
+    /// URL, or a CLI on this Mac. The composer offers only these, because a
+    /// menu entry that fails with "not configured" the moment it is used is
+    /// a worse affordance than not offering it — Settings is where a
+    /// provider gets set up, and the menu says so.
+    ///
+    /// Stored, not computed. Answering it means a Keychain query per
+    /// key-holding provider — half a millisecond for the four of them, every
+    /// time it is read — and the composer's model menu is part of a `body`
+    /// that runs on every keystroke. It is refreshed when the answer can
+    /// actually have changed: a pull request opening, the selection
+    /// changing, and the app coming back to the front after a trip to
+    /// Settings or a terminal.
+    @Published private(set) var readyProviders: [AIProviderDescriptor] = []
+
+    func refreshReadyProviders() {
+        let ready = AIProviderRegistry.all.filter { engine.isConfigured(id: $0.id) }
+        // Assigning unconditionally would republish on every window
+        // activation and rebuild the whole AI panel for no change.
+        if ready != readyProviders { readyProviders = ready }
+    }
+
+    /// What to call the current model in one short chip.
+    ///
+    /// The registry's label where there is one ("Claude Sonnet 5" reads
+    /// better than `claude-sonnet-5`), the raw id when the reviewer typed
+    /// their own, and the provider's name when there is no model id at all —
+    /// Apple Intelligence and the ACP agents pick their own.
+    var currentModelLabel: String {
+        let descriptor = AIProviderRegistry.descriptor(for: providerID)
+        let resolved = engine.resolvedModel(providerID: providerID, chosen: modelID)
+        guard !resolved.isEmpty else { return descriptor.displayName }
+        return descriptor.models.first { $0.modelID == resolved }?.label ?? resolved
+    }
+
     func selectReasoningEffort(_ effort: String) {
         reasoningEffort = effort
         persistSelection()
@@ -414,6 +464,9 @@ final class AIModel: ObservableObject {
     }
 
     private func persistSelection() {
+        // A provider the reviewer just picked may be one whose key they
+        // added a moment ago in Settings.
+        refreshReadyProviders()
         var settings = context.settings()
         settings.aiProviderID = providerID
         settings.aiModel = modelID

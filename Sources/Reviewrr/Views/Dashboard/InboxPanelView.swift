@@ -12,7 +12,6 @@ struct InboxPanelView: View {
     @Binding var selectedRowID: String?
     var searchFocused: FocusState<Bool>.Binding
     @Binding var showAddProject: Bool
-    @Binding var sidebarCollapsed: Bool
     let onSelectRow: (InboxPR) -> Void
     var onResumeDraft: (PRReference) -> Void = { _ in }
     @Environment(\.reviewrrTextScale) private var scale
@@ -24,7 +23,7 @@ struct InboxPanelView: View {
                 DashboardDraftsView(reviews: model.savedReviews, onResume: onResumeDraft, onClear: model.clearSavedReviews, clearError: model.draftClearError)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                InboxFilterBar(model: model, searchFocused: searchFocused, sidebarCollapsed: $sidebarCollapsed)
+                InboxFilterBar(model: model, searchFocused: searchFocused)
                 Divider()
                 // One surface swapping for another (loading → empty → populated)
                 // is exactly what `Motion.surface` is for; `contentStateKey`
@@ -46,17 +45,6 @@ struct InboxPanelView: View {
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
-            }
-        }
-        .toolbar {
-            ToolbarItem(placement: .navigation) {
-                if model.showsSavedReviews {
-                    Button { sidebarCollapsed.toggle() } label: {
-                        Image(systemName: "sidebar.leading")
-                    }
-                    .help(sidebarCollapsed ? "Show projects" : "Hide projects")
-                    .accessibilityLabel(sidebarCollapsed ? "Show projects" : "Hide projects")
-                }
             }
         }
         .onChange(of: model.selectedProjectKey) { _, _ in

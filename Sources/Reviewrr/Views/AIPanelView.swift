@@ -113,7 +113,12 @@ struct AIPanelView: View {
         }
         .onChange(of: model.providerID) { _, _ in refreshProvider() }
         .onChange(of: model.modelID) { _, _ in refreshProvider() }
-        .onChange(of: controlActiveState) { _, _ in providerConfigured = model.isProviderConfigured }
+        // Coming back to the front is when a key added in Settings, or a
+        // CLI just installed in a terminal, becomes true.
+        .onChange(of: controlActiveState) { _, _ in
+            providerConfigured = model.isProviderConfigured
+            model.refreshReadyProviders()
+        }
         // Comparing the whole `AnalysisState` here would mean an equality
         // pass over every finding on every render; the stamp is the cheap
         // identity of a result, which is all that has to change to make the
